@@ -1,0 +1,16 @@
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>[AINews] Meta ships Muse Spark</title>
+      <link>https://www.latent.space/p/ainews-meta-ships-muse-spark</link>
+      <pubDate>Thu, 09 Apr 2026 00:30:00 GMT</pubDate>
+      <description>A frontier model launch for the week.</description>
+    </item>
+    <item>
+      <title>Regular Latent Space podcast</title>
+      <link>https://www.latent.space/p/regular-podcast</link>
+      <pubDate>Thu, 09 Apr 2026 00:00:00 GMT</pubDate>
+      <description>Not an AINews post.</description>
+    </item>
+  </channel>
+</rss>

@@ -1,0 +1,10 @@
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>ThursdAI - Claude Code and Gemini week</title>
+      <link>https://sub.thursdai.news/p/sample</link>
+      <pubDate>Thu, 09 Apr 2026 01:00:00 GMT</pubDate>
+      <description>Claude Code, Gemini and agent engineering roundup.</description>
+    </item>
+  </channel>
+</rss>

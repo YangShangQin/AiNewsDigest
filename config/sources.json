@@ -1,0 +1,235 @@
+{
+  "schema_version": 1,
+  "description": "AI News Digest source configuration. Add sources here when they can reuse an existing parser; add a parser in scripts/report.py only for a new page structure.",
+  "sources": [
+    {
+      "id": "smol-ai",
+      "name": "news.smol.ai",
+      "modes": ["daily"],
+      "kind": "news",
+      "parser": "smol_issue",
+      "url": "https://news.smol.ai/issues",
+      "fixture": "smol_issues.html",
+      "enabled": true,
+      "description": "Daily smol.ai issue index; the parser chooses issue pages matching the report date window.",
+      "params": {
+        "issue_fixture": "smol_issue.html"
+      }
+    },
+    {
+      "id": "hacker-news-front",
+      "name": "news.ycombinator.com/front",
+      "modes": ["daily"],
+      "kind": "news",
+      "parser": "hn_front",
+      "url": "https://news.ycombinator.com/",
+      "fixture": "hn_front.html",
+      "enabled": true,
+      "description": "Hacker News front page filtered to AI, coding, and LLM related stories."
+    },
+    {
+      "id": "hn-algolia",
+      "name": "hn.algolia.com",
+      "modes": ["daily"],
+      "kind": "news",
+      "parser": "hn_algolia",
+      "url": "https://hn.algolia.com/api/v1/search_by_date",
+      "enabled": true,
+      "description": "Algolia HN Search API recall for AI and coding keywords within the report window.",
+      "params": {
+        "queries": [
+          "Claude Code",
+          "Codex",
+          "Cursor",
+          "AI coding",
+          "LLM",
+          "OpenAI",
+          "Anthropic",
+          "Gemini",
+          "DeepSeek",
+          "Qwen",
+          "Gemma",
+          "MCP"
+        ]
+      }
+    },
+    {
+      "id": "daily-dev-highlights",
+      "name": "app.daily.dev/agents",
+      "modes": ["daily"],
+      "kind": "news",
+      "parser": "daily_dev_highlights",
+      "url": "https://app.daily.dev/agents",
+      "fixture": "daily_agents.html",
+      "enabled": true,
+      "description": "daily.dev Agents highlights used as a daily AI coding signal."
+    },
+    {
+      "id": "ai-bot",
+      "name": "ai-bot.cn",
+      "modes": ["daily"],
+      "kind": "news",
+      "parser": "ai_bot",
+      "url": "https://ai-bot.cn/daily-ai-news/",
+      "fixture": "ai_bot.html",
+      "enabled": true,
+      "description": "Chinese rolling AI daily news feed, mainly industry and product updates."
+    },
+    {
+      "id": "aibase",
+      "name": "news.aibase.com",
+      "modes": ["daily"],
+      "kind": "news",
+      "parser": "aibase",
+      "url": "https://news.aibase.com/zh/news",
+      "fixture": "aibase.html",
+      "enabled": true,
+      "description": "Chinese AIBase news feed with view-count and relative-time signals."
+    },
+    {
+      "id": "maomu",
+      "name": "maomu.com",
+      "modes": ["daily"],
+      "kind": "news",
+      "parser": "maomu",
+      "url": "https://www.maomu.com/news",
+      "fixture": "maomu.html",
+      "enabled": true,
+      "description": "Chinese AI news feed parsed by news item list position and relative time."
+    },
+    {
+      "id": "github-trending",
+      "name": "github.com/trending",
+      "modes": ["daily"],
+      "kind": "news",
+      "parser": "github_trending",
+      "url": "https://github.com/trending",
+      "fixture": "github_trending.html",
+      "enabled": true,
+      "description": "GitHub Trending repositories filtered to AI coding or AI tools."
+    },
+    {
+      "id": "collector-search-recall",
+      "name": "collector multi-dimensional search",
+      "modes": ["daily", "weekly"],
+      "kind": "news",
+      "parser": "search_recall",
+      "url": "https://news.google.com/rss/search",
+      "enabled": true,
+      "description": "Search recall layer based on ai-news-collector's A-F strategy: newsletters, community virality, product/model launches, funding, research, and policy.",
+      "params": {
+        "provider": "google_news_rss",
+        "hl": "en-US",
+        "gl": "US",
+        "ceid": "US:en",
+        "max_records_per_query": 3,
+        "max_total_items": 80,
+        "dimensions": [
+          {
+            "key": "newsletter",
+            "label": "Newsletter/周报聚合",
+            "weight": 1.25,
+            "queries": [
+              "\"last week in AI\" {month_year}",
+              "\"AI weekly roundup\" {month_year}",
+              "\"the batch\" \"AI\" newsletter",
+              "\"AI newsletter\" {month_name} {year}"
+            ]
+          },
+          {
+            "key": "community",
+            "label": "社区热度/病毒传播",
+            "weight": 1.3,
+            "queries": [
+              "\"viral AI tool\" OR \"viral AI agent\"",
+              "\"AI trending\" \"Hacker News\" OR Reddit",
+              "\"GitHub trending\" AI OR \"AI open source trending\"",
+              "AI \"everyone is talking about\" OR \"most popular AI\""
+            ]
+          },
+          {
+            "key": "product",
+            "label": "产品发布与模型更新",
+            "weight": 1.25,
+            "queries": [
+              "\"AI model release\" OR \"LLM launch\" {month_name} {year}",
+              "\"AI product launch\" {month_year}",
+              "OpenAI OR Anthropic OR Google OR Meta AI announcement",
+              "\"大模型\" \"发布\" OR \"AI 新产品\""
+            ]
+          },
+          {
+            "key": "business",
+            "label": "融资与商业",
+            "weight": 1.1,
+            "queries": [
+              "\"AI startup funding\" {month_year}",
+              "\"AI acquisition\" OR \"AI IPO\"",
+              "\"AI 融资\" OR \"人工智能投资\""
+            ]
+          },
+          {
+            "key": "research",
+            "label": "研究突破",
+            "weight": 1.05,
+            "queries": [
+              "\"AI breakthrough\" OR \"AI paper\" {month_name}",
+              "\"state of the art\" \"machine learning\"",
+              "\"AI 论文\" OR \"机器学习突破\""
+            ]
+          },
+          {
+            "key": "policy",
+            "label": "监管与政策",
+            "weight": 1.0,
+            "queries": [
+              "\"AI regulation\" OR \"AI policy\" {month_year}",
+              "\"AI law\" OR \"AI governance\"",
+              "\"AI 监管\" OR \"人工智能法案\""
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "thursdai",
+      "name": "thursdai.feed",
+      "modes": ["weekly"],
+      "kind": "news",
+      "parser": "rss_feed",
+      "url": "https://sub.thursdai.news/feed",
+      "fixture": "thursdai_feed.xml",
+      "enabled": true,
+      "description": "ThursdAI weekly RSS feed."
+    },
+    {
+      "id": "latent-ainews",
+      "name": "latent.space/feed",
+      "modes": ["weekly"],
+      "kind": "news",
+      "parser": "rss_feed",
+      "url": "https://www.latent.space/feed",
+      "fixture": "latent_feed.xml",
+      "enabled": true,
+      "description": "Latent Space RSS feed filtered to AINews weekly entries.",
+      "params": {
+        "title_prefix": "[AINews]",
+        "link_contains": "/p/ainews-"
+      }
+    },
+    {
+      "id": "daily-dev-arena",
+      "name": "app.daily.dev/arena",
+      "modes": ["weekly"],
+      "kind": "arena",
+      "parser": "daily_dev_arena",
+      "url": "https://app.daily.dev/agents/arena",
+      "fixture": "daily_arena.html",
+      "enabled": true,
+      "description": "daily.dev Arena model discussion ranking; only rendered in weekly reports.",
+      "params": {
+        "browser_fallback": true
+      }
+    }
+  ]
+}

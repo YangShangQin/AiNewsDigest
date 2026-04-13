@@ -1,0 +1,49 @@
+<script id="__NEXT_DATA__" type="application/json">
+{
+  "props": {
+    "pageProps": {
+      "dehydratedState": {
+        "queries": [
+          {
+            "queryKey": ["arena", "anonymous", "coding-agents"],
+            "state": {
+              "data": {
+                "sentimentGroup": {
+                  "entities": [
+                    {"entity": "cursor", "name": "Cursor"},
+                    {"entity": "codex", "name": "Codex"}
+                  ]
+                },
+                "sentimentTimeSeries": {
+                  "entities": {
+                    "nodes": [
+                      {"entity": "cursor", "volume": [120, 100], "scores": [0.3, 0.4], "dIndex": [2, 1]},
+                      {"entity": "codex", "volume": [40, 35], "scores": [0.2, 0.1], "dIndex": [1, 0]}
+                    ]
+                  }
+                },
+                "sentimentHighlights": {
+                  "items": [
+                    {
+                      "url": "https://x.com/example/cursor",
+                      "text": "Cursor is winning the week",
+                      "metrics": {"likeCount": 30, "replyCount": 10, "retweetCount": 5},
+                      "sentiments": [{"entity": "cursor", "highlightScore": 0.8}]
+                    },
+                    {
+                      "url": "https://x.com/example/codex",
+                      "text": "Codex adds better reviews",
+                      "metrics": {"likeCount": 8, "replyCount": 4, "retweetCount": 2},
+                      "sentiments": [{"entity": "codex", "highlightScore": 0.5}]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+</script>
