@@ -29,7 +29,7 @@
     },
     {
       "id": "hn-algolia",
-      "name": "hn.algolia.com",
+      "name": "Hacker News Search",
       "modes": ["daily"],
       "kind": "news",
       "parser": "hn_algolia",
@@ -72,7 +72,7 @@
       "parser": "ai_bot",
       "url": "https://ai-bot.cn/daily-ai-news/",
       "fixture": "ai_bot.html",
-      "enabled": true,
+      "enabled": false,
       "description": "Chinese rolling AI daily news feed, mainly industry and product updates."
     },
     {

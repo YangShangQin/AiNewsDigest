@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import html
 import importlib.util
 import json
@@ -91,6 +92,9 @@ from bs4 import BeautifulSoup  # type: ignore
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 DEFAULT_MAX_ITEMS = 10
 DEFAULT_SUMMARY_LIMIT = 200
+DEFAULT_INSPECT_SUMMARY_LIMIT = 120
+DEFAULT_SOURCE_WORKERS = 4
+DEFAULT_RECALL_WORKERS = 6
 REQUEST_TIMEOUT = 20
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -114,6 +118,7 @@ HN_QUERIES = [
 ]
 TRACKING_PARAMS = {"ref", "source", "spm", "fbclid", "gclid"}
 ARTICLE_SUMMARY_CACHE: dict[str, str | None] = {}
+ACTIVE_RECALL_WORKERS = DEFAULT_RECALL_WORKERS
 
 AI_CORE_KEYWORDS = {
     "ai",
@@ -315,6 +320,11 @@ SOURCE_RELIABILITY = {
     "collector-search-recall": 58,
 }
 
+SOURCE_DISPLAY_NAMES = {
+    "hn-algolia": "Hacker News Search",
+    "hn.algolia.com": "Hacker News Search",
+}
+
 SEARCH_RECALL_DIMENSION_KEYWORDS = {
     "newsletter": {
         "newsletter",
@@ -499,7 +509,7 @@ class SourceConfig:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate AI daily/weekly news digest.")
-    parser.add_argument("mode", choices=["daily", "weekly", "render"])
+    parser.add_argument("mode", choices=["daily", "weekly", "render", "inspect"])
     parser.add_argument("--date", dest="date_text")
     parser.add_argument("--from", dest="from_text")
     parser.add_argument("--to", dest="to_text")
@@ -509,6 +519,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output")
     parser.add_argument("--output-json")
     parser.add_argument("--input-json")
+    parser.add_argument(
+        "--compact-json",
+        action="store_true",
+        help="Write a smaller candidate JSON for agent editing when used with --output-json.",
+    )
+    parser.add_argument(
+        "--source-workers",
+        type=int,
+        default=DEFAULT_SOURCE_WORKERS,
+        help="Number of source fetch workers for daily/weekly collection.",
+    )
+    parser.add_argument(
+        "--recall-workers",
+        type=int,
+        default=DEFAULT_RECALL_WORKERS,
+        help="Number of concurrent search recall queries.",
+    )
+    parser.add_argument(
+        "--summary-fetch-limit",
+        type=int,
+        help="Per-section remote article summary fetch limit. Defaults to --max-items.",
+    )
+    parser.add_argument(
+        "--inspect-summary-len",
+        type=int,
+        default=DEFAULT_INSPECT_SUMMARY_LIMIT,
+        help="Summary length used by inspect mode.",
+    )
     parser.add_argument("--fixture-dir", dest="fixture_dir")
     parser.add_argument(
         "--sources-config",
@@ -522,6 +560,12 @@ def ensure_session() -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
     return session
+
+
+def worker_session(base_session: requests.Session) -> requests.Session:
+    if type(base_session) is requests.Session:
+        return ensure_session()
+    return base_session
 
 
 def load_source_configs(config_path: Path | None = None) -> list[SourceConfig]:
@@ -1283,13 +1327,33 @@ def choose_event_summary(event: Event, session: requests.Session | None = None) 
     return fetch_article_summary(session, event.canonical_url, event.title)
 
 
-def prepare_grouped_events(grouped: dict[str, list[Event]], session: requests.Session | None = None) -> None:
+def prepare_grouped_events(
+    grouped: dict[str, list[Event]],
+    session: requests.Session | None = None,
+    remote_fetch_limit: int | None = None,
+) -> None:
     for events in grouped.values():
-        for event in events:
-            event.prepared_summary = choose_event_summary(event, session)
+        for index, event in enumerate(events, start=1):
+            event_session = session
+            if remote_fetch_limit is not None and index > remote_fetch_limit:
+                event_session = None
+            event.prepared_summary = choose_event_summary(event, event_session)
 
 
-def serialize_event_candidate(event: Event, rank: int) -> dict[str, Any]:
+def serialize_event_candidate(event: Event, rank: int, compact: bool = False) -> dict[str, Any]:
+    if compact:
+        return {
+            "candidate_id": f"{event.category}-{rank}",
+            "rank": rank,
+            "original_title": event.title,
+            "prepared_summary": clean_text(event.prepared_summary),
+            "title": event.display_title,
+            "summary": event.display_summary,
+            "url": event.canonical_url,
+            "source_names": event.source_names,
+            "category": event.category,
+            "score_total": event.score_total,
+        }
     return {
         "candidate_id": f"{event.category}-{rank}",
         "rank": rank,
@@ -1319,6 +1383,7 @@ def build_candidate_payload(
     statuses: list[SourceStatus],
     max_items: int,
     candidate_pool_size: int,
+    compact: bool = False,
 ) -> dict[str, Any]:
     success_names = [status.name for status in statuses if status.ok]
     failed_sources = [
@@ -1334,7 +1399,7 @@ def build_candidate_payload(
                 "title": f"{section_id} Top {max_items}",
                 "max_items": max_items,
                 "items": [
-                    serialize_event_candidate(event, rank)
+                    serialize_event_candidate(event, rank, compact=compact)
                     for rank, event in enumerate(grouped[section_id], start=1)
                 ],
             }
@@ -1360,6 +1425,7 @@ def build_candidate_payload(
             "timezone": str(window.timezone),
             "max_items": max_items,
             "candidate_pool_size": candidate_pool_size,
+            "compact_json": compact,
             "news_sources": success_names,
             "failed_sources": failed_sources,
         },
@@ -1386,11 +1452,20 @@ def markdown_link_text(value: str) -> str:
     return value.replace("[", "\\[").replace("]", "\\]")
 
 
+def display_source_name(source_name: str) -> str:
+    return SOURCE_DISPLAY_NAMES.get(source_name, source_name)
+
+
+def format_source_names(source_names: Iterable[str]) -> str:
+    names = [display_source_name(str(name)) for name in source_names if str(name)]
+    return ", ".join(names) if names else "未知"
+
+
 def render_event(event: Event, rank: int, tz: ZoneInfo) -> str:
     title = clean_text(event.display_title or chinese_title(event.title, event.category))
     summary = clean_text(event.display_summary or chinese_summary(event.title, event.prepared_summary or event.summary, event.category, DEFAULT_SUMMARY_LIMIT))
     title_link = f"[{markdown_link_text(title)}]({event.canonical_url})"
-    source_label = ", ".join(event.source_names) if event.source_names else "未知"
+    source_label = format_source_names(event.source_names)
     child_indent = " " * len(f"{rank}. ")
     lines = [f"{rank}. {title_link}"]
     if summary:
@@ -1422,7 +1497,7 @@ def render_payload_item(item: dict[str, Any], rank: int) -> str:
     url = clean_text(str(item.get("url") or ""))
     summary = clean_text(str(item.get("summary") or item.get("display_summary") or ""))
     source_names = item.get("source_names") or []
-    source_label = ", ".join(str(name) for name in source_names) if source_names else "未知"
+    source_label = format_source_names(source_names)
     child_indent = " " * len(f"{rank}. ")
     lines = [f"{rank}. [{markdown_link_text(title)}]({url})"]
     if summary:
@@ -1460,7 +1535,7 @@ def render_payload_report(payload: dict[str, Any]) -> str:
         f"# {report_title}",
         "",
         f"- 日期：{report_date}",
-        f"- 新闻来源：{', '.join(str(name) for name in news_sources) if news_sources else '无'}",
+        f"- 新闻来源：{', '.join(display_source_name(str(name)) for name in news_sources) if news_sources else '无'}",
         "",
     ]
     for section in payload.get("sections") or []:
@@ -1478,6 +1553,49 @@ def render_payload_report(payload: dict[str, Any]) -> str:
     if metadata.get("mode") == "weekly":
         lines.append(render_arena_payload(payload.get("arena") or []))
         lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def inspect_payload_report(payload: dict[str, Any], summary_limit: int = DEFAULT_INSPECT_SUMMARY_LIMIT) -> str:
+    metadata = payload.get("metadata") or {}
+    report_title = clean_text(str(metadata.get("report_title") or "AI 日报"))
+    report_date = clean_text(str(metadata.get("report_date") or ""))
+    news_sources = metadata.get("news_sources") or []
+    source_label = ", ".join(display_source_name(str(name)) for name in news_sources) if news_sources else "无"
+    limit = max(1, int(summary_limit or DEFAULT_INSPECT_SUMMARY_LIMIT))
+    lines = [
+        f"{report_title} | 日期：{report_date} | 来源：{source_label}",
+        f"max_items={metadata.get('max_items', '')} candidate_pool_size={metadata.get('candidate_pool_size', '')}",
+    ]
+    failed_sources = metadata.get("failed_sources") or []
+    if failed_sources:
+        lines.append(f"failed_sources={len(failed_sources)}")
+
+    for section in payload.get("sections") or []:
+        section_title = clean_text(str(section.get("title") or section.get("id") or ""))
+        items = section.get("items") or []
+        lines.append("")
+        lines.append(f"## {section_title} ({len(items)})")
+        for rank, item in enumerate(items, start=1):
+            title = clean_text(str(item.get("title") or item.get("display_title") or item.get("original_title") or ""))
+            summary = clean_text(
+                str(
+                    item.get("summary")
+                    or item.get("display_summary")
+                    or item.get("prepared_summary")
+                    or item.get("original_summary")
+                    or ""
+                )
+            )
+            source_names = item.get("source_names") or []
+            source_names_label = format_source_names(source_names)
+            scores = item.get("scores") if isinstance(item.get("scores"), dict) else {}
+            score = item.get("score_total") if item.get("score_total") is not None else scores.get("total")
+            score_label = f"{float(score):.2f}" if isinstance(score, (int, float)) else ""
+            candidate_id = clean_text(str(item.get("candidate_id") or ""))
+            lines.append(f"{rank}. {candidate_id} | {title} | 来源：{source_names_label} | score：{score_label}")
+            if summary:
+                lines.append(f"   摘要：{collapse_summary(summary, limit)}")
     return "\n".join(lines).strip() + "\n"
 
 
@@ -2072,16 +2190,11 @@ def parse_search_recall(
     if not isinstance(dimensions, list):
         raise ValueError("search recall dimensions must be a list")
 
-    items: list[RawItem] = []
-    seen_urls: set[str] = set()
-    failures = 0
-    attempts = 0
-    observed = window_reference_time(window)
+    jobs: list[dict[str, Any]] = []
     for raw_dimension in dimensions:
         if not isinstance(raw_dimension, dict):
             continue
         dimension_key = str(raw_dimension.get("key") or "general")
-        dimension_label = str(raw_dimension.get("label") or dimension_key)
         dimension_weight = float(raw_dimension.get("weight") or 1.0)
         queries = raw_dimension.get("queries") or []
         if not isinstance(queries, list):
@@ -2090,63 +2203,103 @@ def parse_search_recall(
             query = expand_search_query(str(template), window)
             if not query:
                 continue
-            attempts += 1
+            jobs.append(
+                {
+                    "order": len(jobs),
+                    "dimension_key": dimension_key,
+                    "dimension_weight": dimension_weight,
+                    "query": query,
+                }
+            )
+
+    def fetch_job(job: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        articles = fetch_search_recall_articles(
+            worker_session(session),
+            config,
+            provider,
+            str(job["query"]),
+            max_records,
+            window,
+        )
+        return job, articles
+
+    job_results: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    failures = 0
+    workers = max(1, int(ACTIVE_RECALL_WORKERS or 1))
+    if workers <= 1 or len(jobs) <= 1:
+        for job in jobs:
             try:
-                articles = fetch_search_recall_articles(session, config, provider, query, max_records, window)
+                job_results.append(fetch_job(job))
             except Exception:
                 failures += 1
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as executor:
+            future_map = {executor.submit(fetch_job, job): job for job in jobs}
+            for future in as_completed(future_map):
+                try:
+                    job_results.append(future.result())
+                except Exception:
+                    failures += 1
+
+    job_results.sort(key=lambda entry: int(entry[0]["order"]))
+
+    items: list[RawItem] = []
+    seen_urls: set[str] = set()
+    observed = window_reference_time(window)
+    for job, articles in job_results:
+        dimension_key = str(job["dimension_key"])
+        dimension_weight = float(job["dimension_weight"])
+        query = str(job["query"])
+        for result_position, article in enumerate(articles, start=1):
+            if len(items) >= max_total:
+                return items
+            if not isinstance(article, dict):
+                continue
+            title = clean_text(str(article.get("title") or ""))
+            url = clean_text(str(article.get("url") or article.get("url_mobile") or ""))
+            if not title or not url:
+                continue
+            normalized = normalize_url(url)
+            if normalized in seen_urls:
                 continue
 
-            for result_position, article in enumerate(articles, start=1):
-                if len(items) >= max_total:
-                    return items
-                if not isinstance(article, dict):
-                    continue
-                title = clean_text(str(article.get("title") or ""))
-                url = clean_text(str(article.get("url") or article.get("url_mobile") or ""))
-                if not title or not url:
-                    continue
-                normalized = normalize_url(url)
-                if normalized in seen_urls:
-                    continue
+            snippet = clean_text(str(article.get("snippet") or article.get("description") or ""))
+            if not is_search_recall_relevant(title, snippet, url, dimension_key):
+                continue
+            if not has_obvious_summary(snippet, title):
+                snippet = ""
 
-                snippet = clean_text(str(article.get("snippet") or article.get("description") or ""))
-                if not is_search_recall_relevant(title, snippet, url, dimension_key):
-                    continue
-                if not has_obvious_summary(snippet, title):
-                    snippet = ""
+            published_value = article.get("published_at")
+            published_at = published_value.astimezone(window.timezone) if isinstance(published_value, datetime) else None
+            if published_at is None:
+                published_at = parse_compact_datetime(str(article.get("seendate") or ""), window.timezone)
+            if published_at and not within_window(published_at, window):
+                continue
 
-                published_value = article.get("published_at")
-                published_at = published_value.astimezone(window.timezone) if isinstance(published_value, datetime) else None
-                if published_at is None:
-                    published_at = parse_compact_datetime(str(article.get("seendate") or ""), window.timezone)
-                if published_at and not within_window(published_at, window):
-                    continue
-
-                seen_urls.add(normalized)
-                items.append(
-                    RawItem(
-                        source_name=config.id,
-                        source_type=window.mode,
-                        title=title,
-                        summary=snippet,
-                        url=url,
-                        published_at=published_at,
-                        observed_at=observed,
-                        position=len(items) + 1,
-                        metrics={
-                            "dimension_weight": dimension_weight,
-                            "result_position": float(result_position),
-                            "community_dimension": 1.0 if dimension_key == "community" else 0.0,
-                        },
-                        notes=[
-                            f"search_dimension:{dimension_key}",
-                            f"search_query:{query}",
-                        ],
-                    )
+            seen_urls.add(normalized)
+            items.append(
+                RawItem(
+                    source_name=config.id,
+                    source_type=window.mode,
+                    title=title,
+                    summary=snippet,
+                    url=url,
+                    published_at=published_at,
+                    observed_at=observed,
+                    position=len(items) + 1,
+                    metrics={
+                        "dimension_weight": dimension_weight,
+                        "result_position": float(result_position),
+                        "community_dimension": 1.0 if dimension_key == "community" else 0.0,
+                    },
+                    notes=[
+                        f"search_dimension:{dimension_key}",
+                        f"search_query:{query}",
+                    ],
                 )
+            )
 
-    if attempts > 0 and failures == attempts:
+    if jobs and failures == len(jobs):
         raise RuntimeError("all search recall queries failed")
     return items
 
@@ -2435,22 +2588,54 @@ def gather_news_sources(
     window: ReportWindow,
     fixture_dir: Path | None,
     source_configs: list[SourceConfig],
+    source_workers: int = DEFAULT_SOURCE_WORKERS,
 ) -> tuple[list[RawItem], list[SourceStatus]]:
-    items: list[RawItem] = []
-    statuses: list[SourceStatus] = []
-    for config in source_configs:
+    results: list[tuple[int, list[RawItem], SourceStatus]] = []
+    runnable: list[
+        tuple[
+            int,
+            SourceConfig,
+            Callable[[SourceConfig, requests.Session, ReportWindow, Path | None], list[RawItem]],
+        ]
+    ] = []
+    for index, config in enumerate(source_configs):
         if not config.supports(window.mode, "news"):
             continue
         parser = NEWS_SOURCE_PARSERS.get(config.parser)
         if parser is None:
-            statuses.append(SourceStatus(config.name, False, f"unsupported parser: {config.parser}"))
+            results.append((index, [], SourceStatus(config.name, False, f"unsupported parser: {config.parser}")))
             continue
+        runnable.append((index, config, parser))
+
+    def run_source(
+        entry: tuple[
+            int,
+            SourceConfig,
+            Callable[[SourceConfig, requests.Session, ReportWindow, Path | None], list[RawItem]],
+        ]
+    ) -> tuple[int, list[RawItem], SourceStatus]:
+        index, config, parser = entry
         try:
-            chunk = parser(config, session, window, fixture_dir)
-            items.extend(chunk)
-            statuses.append(SourceStatus(config.name, True, f"{len(chunk)} 条"))
+            chunk = parser(config, worker_session(session), window, fixture_dir)
+            return index, chunk, SourceStatus(config.name, True, f"{len(chunk)} 条")
         except Exception as exc:  # pragma: no cover - exercised via runtime
-            statuses.append(SourceStatus(config.name, False, str(exc)))
+            return index, [], SourceStatus(config.name, False, str(exc))
+
+    workers = max(1, int(source_workers or 1))
+    if workers <= 1 or len(runnable) <= 1:
+        for entry in runnable:
+            results.append(run_source(entry))
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(runnable))) as executor:
+            future_map = {executor.submit(run_source, entry): entry for entry in runnable}
+            for future in as_completed(future_map):
+                results.append(future.result())
+
+    items: list[RawItem] = []
+    statuses: list[SourceStatus] = []
+    for _, chunk, status in sorted(results, key=lambda entry: entry[0]):
+        items.extend(chunk)
+        statuses.append(status)
     return items, statuses
 
 
@@ -2459,11 +2644,12 @@ def gather_daily_sources(
     window: ReportWindow,
     fixture_dir: Path | None,
     source_configs: list[SourceConfig] | None = None,
+    source_workers: int = DEFAULT_SOURCE_WORKERS,
 ) -> tuple[list[RawItem], list[ArenaEntry], list[SourceStatus]]:
     if source_configs is None:
         source_configs = load_source_configs()
     arena_entries: list[ArenaEntry] = []
-    items, statuses = gather_news_sources(session, window, fixture_dir, source_configs)
+    items, statuses = gather_news_sources(session, window, fixture_dir, source_configs, source_workers=source_workers)
     return items, arena_entries, statuses
 
 
@@ -2506,10 +2692,11 @@ def gather_weekly_sources(
     window: ReportWindow,
     fixture_dir: Path | None,
     source_configs: list[SourceConfig] | None = None,
+    source_workers: int = DEFAULT_SOURCE_WORKERS,
 ) -> tuple[list[RawItem], list[ArenaEntry], list[SourceStatus]]:
     if source_configs is None:
         source_configs = load_source_configs()
-    items, statuses = gather_news_sources(session, window, fixture_dir, source_configs)
+    items, statuses = gather_news_sources(session, window, fixture_dir, source_configs, source_workers=source_workers)
     arena_entries, arena_statuses = gather_arena_source(session, window, fixture_dir, source_configs)
     statuses.extend(arena_statuses)
     return items, arena_entries, statuses
@@ -2539,23 +2726,46 @@ def main() -> int:
         else:
             sys.stdout.write(markdown)
         return 0
+    if args.mode == "inspect":
+        if not args.input_json:
+            raise ValueError("inspect 模式必须提供 --input-json")
+        payload = json.loads(Path(args.input_json).read_text(encoding="utf-8"))
+        sys.stdout.write(inspect_payload_report(payload, args.inspect_summary_len))
+        return 0
 
     fixture_dir = Path(args.fixture_dir) if args.fixture_dir else None
     source_config_path = Path(args.sources_config) if args.sources_config else None
     source_configs = load_source_configs(source_config_path)
     window = compute_window(args.mode, args.timezone, args.date_text, args.from_text, args.to_text)
     session = ensure_session()
+    global ACTIVE_RECALL_WORKERS
+    ACTIVE_RECALL_WORKERS = max(1, int(args.recall_workers or 1))
 
     if args.mode == "daily":
-        raw_items, arena_entries, statuses = gather_daily_sources(session, window, fixture_dir, source_configs)
+        raw_items, arena_entries, statuses = gather_daily_sources(
+            session,
+            window,
+            fixture_dir,
+            source_configs,
+            source_workers=max(1, int(args.source_workers or 1)),
+        )
     else:
-        raw_items, arena_entries, statuses = gather_weekly_sources(session, window, fixture_dir, source_configs)
+        raw_items, arena_entries, statuses = gather_weekly_sources(
+            session,
+            window,
+            fixture_dir,
+            source_configs,
+            source_workers=max(1, int(args.source_workers or 1)),
+        )
 
     raw_items = filter_items_by_window(raw_items, window)
     events = merge_items(raw_items)
     candidate_pool_size = max(args.max_items, int(args.candidate_pool_size or args.max_items))
     grouped = group_events(events, window, candidate_pool_size if args.output_json else args.max_items)
-    prepare_grouped_events(grouped, session)
+    summary_fetch_limit = args.summary_fetch_limit
+    if summary_fetch_limit is None:
+        summary_fetch_limit = args.max_items
+    prepare_grouped_events(grouped, session, remote_fetch_limit=max(0, int(summary_fetch_limit)))
 
     if args.output_json:
         payload = build_candidate_payload(
@@ -2565,8 +2775,12 @@ def main() -> int:
             statuses,
             args.max_items,
             candidate_pool_size,
+            compact=args.compact_json,
         )
-        output_json = json.dumps(payload, ensure_ascii=False, indent=2)
+        if args.compact_json:
+            output_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        else:
+            output_json = json.dumps(payload, ensure_ascii=False, indent=2)
         Path(args.output_json).write_text(output_json, encoding="utf-8")
         return 0
 

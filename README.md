@@ -60,8 +60,16 @@ python3 scripts/report.py daily \
 ```bash
 python3 scripts/report.py render \
   --input-json /tmp/ai-daily-final.json \
-  --output reports/ai-daily-2026-04-10.md
+  --output ~/reports/ai-daily-2026-04-10.md
 ```
+
+When using this skill through Codex, the default behavior is to save the final report locally.
+If the user does not specify an output path, save to:
+
+- `~/reports/ai-daily-YYYY-MM-DD.md`
+- `~/reports/ai-weekly-YYYY-MM-DD.md`
+
+Only skip local file generation when the user explicitly asks to return the report in chat only.
 
 If you omit `--output-json`, `daily` / `weekly` still print a debug-oriented Markdown report directly, but the preferred skill flow is `collect -> AI editorial -> render`.
 

@@ -7,9 +7,8 @@
 ### 日报
 - `news.smol.ai/issues`
 - `news.ycombinator.com`
-- `hn.algolia.com`
+- `Hacker News Search`（`hn.algolia.com`）
 - `app.daily.dev/agents`
-- `ai-bot.cn/daily-ai-news`
 - `news.aibase.com/zh/news`
 - `maomu.com/news`
 - `github.com/trending`

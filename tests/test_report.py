@@ -137,7 +137,7 @@ class ReportTests(unittest.TestCase):
 
     def test_source_config_is_external_and_described(self):
         configs = report.load_source_configs()
-        self.assertTrue(any(config.id == "ai-bot" and config.description for config in configs))
+        self.assertFalse(any(config.id == "ai-bot" and config.enabled for config in configs))
         self.assertTrue(any(config.id == "daily-dev-arena" and config.kind == "arena" for config in configs))
 
     def test_collector_search_recall_source_is_configured(self):
@@ -501,6 +501,131 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn("摘要：", rendered)
         self.assertIn("来源：aibase", rendered)
 
+    def test_render_payload_report_displays_hn_algolia_as_hacker_news_search(self):
+        payload = {
+            "metadata": {
+                "mode": "daily",
+                "report_title": "AI 日报",
+                "report_date": "2026-04-08",
+                "news_sources": ["hn.algolia.com"],
+            },
+            "sections": [
+                {
+                    "id": "AICoding",
+                    "title": "AICoding Top 10",
+                    "items": [
+                        {
+                            "title": "Claude Code 发布更新",
+                            "summary": "Claude Code 发布面向开发者的新功能。",
+                            "url": "https://example.com/post",
+                            "source_names": ["hn-algolia"],
+                        }
+                    ],
+                },
+            ],
+            "arena": [],
+        }
+        rendered = report.render_payload_report(payload)
+        self.assertIn("- 新闻来源：Hacker News Search", rendered)
+        self.assertIn("来源：Hacker News Search", rendered)
+        self.assertNotIn("hn-algolia", rendered)
+
+    def test_inspect_payload_report_outputs_compact_candidate_view(self):
+        payload = {
+            "metadata": {
+                "mode": "daily",
+                "report_title": "AI 日报",
+                "report_date": "2026-04-08",
+                "max_items": 10,
+                "candidate_pool_size": 15,
+                "news_sources": ["hn.algolia.com"],
+            },
+            "sections": [
+                {
+                    "id": "AICoding",
+                    "title": "AICoding Top 10",
+                    "items": [
+                        {
+                            "candidate_id": "AICoding-1",
+                            "original_title": "Claude Code 发布更新",
+                            "prepared_summary": "Claude Code 发布面向开发者的新功能，并优化终端代理工作流。",
+                            "url": "https://example.com/post",
+                            "source_names": ["hn-algolia"],
+                            "score_total": 42.125,
+                        }
+                    ],
+                },
+            ],
+            "arena": [],
+        }
+        output = report.inspect_payload_report(payload, summary_limit=20)
+        self.assertIn("AI 日报 | 日期：2026-04-08", output)
+        self.assertIn("## AICoding Top 10 (1)", output)
+        self.assertIn("AICoding-1 | Claude Code 发布更新", output)
+        self.assertIn("来源：Hacker News Search", output)
+        self.assertIn("score：42.12", output)
+        self.assertNotIn("https://example.com/post", output)
+
+    def test_prepare_grouped_events_limits_remote_summary_fetches(self):
+        first_item = report.RawItem(
+            source_name="hn-algolia",
+            source_type="daily",
+            title="Claude Code memory",
+            summary="",
+            url="https://example.com/first",
+            published_at=None,
+            observed_at=self.now,
+            position=1,
+        )
+        second_item = report.RawItem(
+            source_name="hn-algolia",
+            source_type="daily",
+            title="Claude Code terminal",
+            summary="",
+            url="https://example.com/second",
+            published_at=None,
+            observed_at=self.now,
+            position=2,
+        )
+        events = [
+            report.Event(
+                title=first_item.title,
+                summary="",
+                canonical_url=first_item.url,
+                published_at=None,
+                observed_at=self.now,
+                items=[first_item],
+                category="AICoding",
+            ),
+            report.Event(
+                title=second_item.title,
+                summary="",
+                canonical_url=second_item.url,
+                published_at=None,
+                observed_at=self.now,
+                items=[second_item],
+                category="AICoding",
+            ),
+        ]
+        calls = []
+        original_fetch_article_summary = report.fetch_article_summary
+        try:
+            def fake_fetch(session, url, title=""):
+                calls.append(url)
+                return f"summary for {title}"
+
+            report.fetch_article_summary = fake_fetch
+            report.prepare_grouped_events(
+                {"AICoding": events, "AI行业": [], "AI工具": []},
+                FakeSession(self.fake_algolia_payload()),
+                remote_fetch_limit=1,
+            )
+        finally:
+            report.fetch_article_summary = original_fetch_article_summary
+        self.assertEqual(calls, ["https://example.com/first"])
+        self.assertIn("summary for Claude Code memory", events[0].prepared_summary)
+        self.assertEqual(events[1].prepared_summary, "")
+
     def test_main_collect_json_outputs_candidate_payload(self):
         fake_session = FakeSession(self.fake_algolia_payload())
         original_ensure_session = report.ensure_session
@@ -531,6 +656,37 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(payload["metadata"]["max_items"], 10)
         self.assertEqual(payload["metadata"]["candidate_pool_size"], 12)
         self.assertTrue(payload["sections"][0]["items"])
+
+    def test_main_collect_json_can_output_compact_payload(self):
+        fake_session = FakeSession(self.fake_algolia_payload())
+        original_ensure_session = report.ensure_session
+        original_argv = sys.argv
+        try:
+            report.ensure_session = lambda: fake_session
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                output_path = Path(tmp_dir) / "candidates.json"
+                sys.argv = [
+                    "report.py",
+                    "daily",
+                    "--date",
+                    "2026-04-08",
+                    "--fixture-dir",
+                    str(FIXTURE_DIR),
+                    "--output-json",
+                    str(output_path),
+                    "--compact-json",
+                ]
+                code = report.main()
+                payload = json.loads(output_path.read_text(encoding="utf-8"))
+        finally:
+            report.ensure_session = original_ensure_session
+            sys.argv = original_argv
+        self.assertEqual(code, 0)
+        item = payload["sections"][0]["items"][0]
+        self.assertTrue(payload["metadata"]["compact_json"])
+        self.assertIn("score_total", item)
+        self.assertNotIn("scores", item)
+        self.assertNotIn("original_summary", item)
 
     def test_main_render_from_json_renders_weekly_arena(self):
         original_argv = sys.argv
