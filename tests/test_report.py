@@ -135,10 +135,49 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertIn("Claude Code", items[0].title)
 
+    def test_parse_hn_algolia_uses_popularity_search_and_filters_low_engagement(self):
+        session = FakeSearchSession(
+            {
+                "hits": [
+                    {
+                        "objectID": "low",
+                        "title": "Ask HN: How are PMs keeping up with AI-accelerated engineering output?",
+                        "url": None,
+                        "created_at_i": int(datetime(2026, 4, 8, 11, 0, tzinfo=timezone.utc).timestamp()),
+                        "points": 2,
+                        "num_comments": 1,
+                        "story_text": "Claude Code and Codex are increasing engineering output.",
+                    },
+                    {
+                        "objectID": "high",
+                        "title": "Claude Code adds terminal workflow features",
+                        "url": "https://example.com/claude-code",
+                        "created_at_i": int(datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc).timestamp()),
+                        "points": 3,
+                        "num_comments": 1,
+                        "story_text": "Claude Code improves AI coding workflows.",
+                    },
+                ]
+            }
+        )
+        query = "Claude Code Codex Cursor"
+        items = report.parse_hn_algolia(session, self.daily_window, queries=[query])
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].title, "Claude Code adds terminal workflow features")
+        self.assertEqual(items[0].metrics["points"], 3)
+        self.assertEqual(items[0].metrics["comments"], 1)
+        self.assertEqual(session.calls[0]["url"], "https://hn.algolia.com/api/v1/search")
+        self.assertEqual(session.calls[0]["params"]["query"], query)
+        self.assertEqual(session.calls[0]["params"]["optionalWords"], query)
+        self.assertEqual(session.calls[0]["params"]["tags"], "story")
+
     def test_source_config_is_external_and_described(self):
         configs = report.load_source_configs()
         self.assertFalse(any(config.id == "ai-bot" and config.enabled for config in configs))
         self.assertTrue(any(config.id == "daily-dev-arena" and config.kind == "arena" for config in configs))
+        hn_source = next(config for config in configs if config.id == "hn-algolia")
+        self.assertEqual(hn_source.url, "https://hn.algolia.com/api/v1/search")
+        self.assertEqual(len(hn_source.params["queries"]), 3)
 
     def test_collector_search_recall_source_is_configured(self):
         configs = report.load_source_configs()
@@ -426,6 +465,65 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(events[0].summary, "summary two is longer")
         self.assertEqual(set(events[0].source_names), {"smol-ai", "hn-algolia"})
 
+    def test_serialize_event_candidate_includes_hn_metrics(self):
+        observed = datetime(2026, 4, 9, 9, 0, tzinfo=report.ZoneInfo("Asia/Shanghai"))
+        item = report.RawItem(
+            source_name="hn-algolia",
+            source_type="daily",
+            title="Claude Code adds worktree support",
+            summary="AI coding update",
+            url="https://example.com/post",
+            published_at=observed,
+            observed_at=observed,
+            position=1,
+            metrics={"points": 7.0, "comments": 4.0},
+        )
+        event = report.Event(
+            title=item.title,
+            summary=item.summary,
+            canonical_url=item.url,
+            published_at=item.published_at,
+            observed_at=item.observed_at,
+            items=[item],
+            category="AICoding",
+            score_total=50.0,
+        )
+        payload = report.serialize_event_candidate(event, 1, compact=True)
+        self.assertEqual(payload["metrics"]["hn_points"], 7.0)
+        self.assertEqual(payload["metrics"]["hn_comments"], 4.0)
+        self.assertEqual(payload["metrics"]["hn_popularity"], 15.0)
+
+    def test_compute_event_scores_uses_ten_percent_event_level_weight(self):
+        observed = datetime(2026, 4, 8, 12, 0, tzinfo=report.ZoneInfo("Asia/Shanghai"))
+        item = report.RawItem(
+            source_name="hn-algolia",
+            source_type="daily",
+            title="Claude Code launches coding agent update",
+            summary="Claude Code adds AI coding features.",
+            url="https://example.com/post",
+            published_at=observed,
+            observed_at=observed,
+            position=1,
+            metrics={"points": 12.0, "comments": 6.0},
+        )
+        event = report.Event(
+            title=item.title,
+            summary=item.summary,
+            canonical_url=item.url,
+            published_at=item.published_at,
+            observed_at=item.observed_at,
+            items=[item],
+            category="AICoding",
+        )
+        report.compute_event_scores(event, self.daily_window)
+        expected_importance = (
+            0.10 * report.event_level_score(event.title, event.summary, event.category)
+            + 0.35 * report.source_reliability(event.source_names)
+            + 0.25 * report.coverage_score(len(event.source_names))
+            + 0.30 * report.timeliness_score(event.primary_time, self.daily_window)
+        )
+        self.assertEqual(event.score_importance, round(expected_importance, 2))
+
     def test_filter_items_by_window_keeps_observed_only_items(self):
         item = report.RawItem(
             source_name="github-trending",
@@ -552,6 +650,11 @@ class ReportTests(unittest.TestCase):
                             "url": "https://example.com/post",
                             "source_names": ["hn-algolia"],
                             "score_total": 42.125,
+                            "metrics": {
+                                "hn_points": 12,
+                                "hn_comments": 8,
+                                "hn_popularity": 28,
+                            },
                         }
                     ],
                 },
@@ -564,6 +667,7 @@ class ReportTests(unittest.TestCase):
         self.assertIn("AICoding-1 | Claude Code 发布更新", output)
         self.assertIn("来源：Hacker News Search", output)
         self.assertIn("score：42.12", output)
+        self.assertIn("HN：12 points/8 comments", output)
         self.assertNotIn("https://example.com/post", output)
 
     def test_prepare_grouped_events_limits_remote_summary_fetches(self):

@@ -105,7 +105,7 @@ Each source entry contains:
 - `fixture`: optional fixture file used by tests.
 - `enabled`: set to `false` to disable a source without deleting it.
 - `description`: human-readable source notes.
-- `params`: parser-specific settings, such as RSS filters or HN queries.
+- `params`: parser-specific settings, such as RSS filters or grouped HN queries.
 
 The default daily and weekly configuration includes `collector-search-recall`, a configurable recall layer adapted from `ai-news-collector`. It expands six search dimensions: newsletters, community virality, product/model launches, funding/business, research breakthroughs, and policy/regulation. Query templates live in `config/sources.json` and support `{month_year}`, `{month_name}`, `{year}`, `{month}`, and `{date}`.
 

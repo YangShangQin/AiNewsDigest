@@ -33,23 +33,14 @@
       "modes": ["daily"],
       "kind": "news",
       "parser": "hn_algolia",
-      "url": "https://hn.algolia.com/api/v1/search_by_date",
+      "url": "https://hn.algolia.com/api/v1/search",
       "enabled": true,
-      "description": "Algolia HN Search API recall for AI and coding keywords within the report window.",
+      "description": "Algolia HN Search API popularity-ranked recall for AI and coding keywords within the report window.",
       "params": {
         "queries": [
-          "Claude Code",
-          "Codex",
-          "Cursor",
-          "AI coding",
-          "LLM",
-          "OpenAI",
-          "Anthropic",
-          "Gemini",
-          "DeepSeek",
-          "Qwen",
-          "Gemma",
-          "MCP"
+          "Claude Code Codex Cursor",
+          "OpenAI Anthropic Gemini DeepSeek Qwen Gemma",
+          "AI coding LLM MCP"
         ]
       }
     },

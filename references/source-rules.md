@@ -86,9 +86,13 @@
 
 `总分 = 0.45*重要程度 + 0.35*关注度 + 0.20*讨论度`
 
+Hacker News 来源（`hacker-news-front`、`hn-algolia`）不计入重要程度，仅按关注度和讨论度重新归一化：
+
+`总分 = (0.35*关注度 + 0.20*讨论度) / 0.55`
+
 ### 重要程度
 
-`重要程度 = 0.40*事件级别 + 0.25*来源可靠度 + 0.20*跨源覆盖 + 0.15*时效性`
+`重要程度 = 0.10*事件级别 + 0.35*来源可靠度 + 0.25*跨源覆盖 + 0.30*时效性`
 
 ### 关注度
 
@@ -100,7 +104,7 @@
 
 ## 站内热度映射
 
-- Hacker News：`points`、`comments`
+- Hacker News：`points`、`comments`；Hacker News front 与 Hacker News Search 均过滤 `points + 2*comments < 5` 的低互动条目，Hacker News Search 默认使用 popularity-ranked `/api/v1/search`
 - daily.dev Highlights：高亮顺位
 - daily.dev Arena：近 7 天讨论量、`dIndex`、精选讨论互动
 - GitHub Trending：`stars today`、榜单位置

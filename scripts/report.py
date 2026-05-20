@@ -101,20 +101,12 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/135.0.0.0 Safari/537.36"
 )
-ALGOLIA_API = "https://hn.algolia.com/api/v1/search_by_date"
+ALGOLIA_API = "https://hn.algolia.com/api/v1/search"
+HN_MIN_POPULARITY_SCORE = 5.0
 HN_QUERIES = [
-    "Claude Code",
-    "Codex",
-    "Cursor",
-    "AI coding",
-    "LLM",
-    "OpenAI",
-    "Anthropic",
-    "Gemini",
-    "DeepSeek",
-    "Qwen",
-    "Gemma",
-    "MCP",
+    "Claude Code Codex Cursor",
+    "OpenAI Anthropic Gemini DeepSeek Qwen Gemma",
+    "AI coding LLM MCP",
 ]
 TRACKING_PARAMS = {"ref", "source", "spm", "fbclid", "gclid"}
 ARTICLE_SUMMARY_CACHE: dict[str, str | None] = {}
@@ -1161,6 +1153,14 @@ def coverage_score(source_count: int) -> float:
     return min(100.0, 35.0 * source_count)
 
 
+def hn_popularity_score(points: float, comments: float) -> float:
+    return points + comments * 2.0
+
+
+def hn_is_low_engagement(points: float, comments: float) -> bool:
+    return hn_popularity_score(points, comments) < HN_MIN_POPULARITY_SCORE
+
+
 def site_heat(item: RawItem) -> float:
     metrics = item.metrics
     if item.source_name.startswith("hacker-news") or item.source_name == "hn-algolia":
@@ -1216,13 +1216,17 @@ def cross_community_score(source_names: list[str]) -> float:
     return min(100.0, overlap * 32.0 + max(0, len(source_names) - overlap) * 10.0)
 
 
+def has_hacker_news_source(source_names: Iterable[str]) -> bool:
+    return any(name.startswith("hacker-news") or name == "hn-algolia" for name in source_names)
+
+
 def compute_event_scores(event: Event, window: ReportWindow) -> None:
     penalty = historical_penalty(event.title, event.canonical_url, window)
     importance = (
-        0.40 * event_level_score(event.title, event.summary, event.category)
-        + 0.25 * source_reliability(event.source_names)
-        + 0.20 * coverage_score(len(event.source_names))
-        + 0.15 * timeliness_score(event.primary_time, window)
+        0.10 * event_level_score(event.title, event.summary, event.category)
+        + 0.35 * source_reliability(event.source_names)
+        + 0.25 * coverage_score(len(event.source_names))
+        + 0.30 * timeliness_score(event.primary_time, window)
     )
     attention = (
         0.45 * min(100.0, max(site_heat(item) for item in event.items))
@@ -1235,7 +1239,10 @@ def compute_event_scores(event: Event, window: ReportWindow) -> None:
     )
     importance = max(0.0, importance - penalty)
     attention = max(0.0, attention - penalty * 0.8)
-    total = 0.45 * importance + 0.35 * attention + 0.20 * discussion
+    if has_hacker_news_source(event.source_names):
+        total = (0.35 * attention + 0.20 * discussion) / 0.55
+    else:
+        total = 0.45 * importance + 0.35 * attention + 0.20 * discussion
     event.score_importance = round(importance, 2)
     event.score_attention = round(attention, 2)
     event.score_discussion = round(discussion, 2)
@@ -1340,9 +1347,27 @@ def prepare_grouped_events(
             event.prepared_summary = choose_event_summary(event, event_session)
 
 
+def serialize_event_metrics(event: Event) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    hn_points: list[float] = []
+    hn_comments: list[float] = []
+    for item in event.items:
+        if item.source_name.startswith("hacker-news") or item.source_name == "hn-algolia":
+            hn_points.append(float(item.metrics.get("points") or 0.0))
+            hn_comments.append(float(item.metrics.get("comments") or 0.0))
+    if hn_points or hn_comments:
+        points = max(hn_points or [0.0])
+        comments = max(hn_comments or [0.0])
+        metrics["hn_points"] = round(points, 2)
+        metrics["hn_comments"] = round(comments, 2)
+        metrics["hn_popularity"] = round(hn_popularity_score(points, comments), 2)
+    return metrics
+
+
 def serialize_event_candidate(event: Event, rank: int, compact: bool = False) -> dict[str, Any]:
+    metrics = serialize_event_metrics(event)
     if compact:
-        return {
+        payload = {
             "candidate_id": f"{event.category}-{rank}",
             "rank": rank,
             "original_title": event.title,
@@ -1354,7 +1379,10 @@ def serialize_event_candidate(event: Event, rank: int, compact: bool = False) ->
             "category": event.category,
             "score_total": event.score_total,
         }
-    return {
+        if metrics:
+            payload["metrics"] = metrics
+        return payload
+    payload = {
         "candidate_id": f"{event.category}-{rank}",
         "rank": rank,
         "original_title": event.title,
@@ -1374,6 +1402,9 @@ def serialize_event_candidate(event: Event, rank: int, compact: bool = False) ->
             "discussion": event.score_discussion,
         },
     }
+    if metrics:
+        payload["metrics"] = metrics
+    return payload
 
 
 def build_candidate_payload(
@@ -1592,8 +1623,15 @@ def inspect_payload_report(payload: dict[str, Any], summary_limit: int = DEFAULT
             scores = item.get("scores") if isinstance(item.get("scores"), dict) else {}
             score = item.get("score_total") if item.get("score_total") is not None else scores.get("total")
             score_label = f"{float(score):.2f}" if isinstance(score, (int, float)) else ""
+            metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
+            metrics_label = ""
+            if "hn_points" in metrics or "hn_comments" in metrics:
+                metrics_label = (
+                    f" | HN：{float(metrics.get('hn_points') or 0.0):.0f} points/"
+                    f"{float(metrics.get('hn_comments') or 0.0):.0f} comments"
+                )
             candidate_id = clean_text(str(item.get("candidate_id") or ""))
-            lines.append(f"{rank}. {candidate_id} | {title} | 来源：{source_names_label} | score：{score_label}")
+            lines.append(f"{rank}. {candidate_id} | {title} | 来源：{source_names_label} | score：{score_label}{metrics_label}")
             if summary:
                 lines.append(f"   摘要：{collapse_summary(summary, limit)}")
     return "\n".join(lines).strip() + "\n"
@@ -1813,6 +1851,10 @@ def parse_hn_front(
         published_at = parse_relative_time(subtext, now, window.timezone)
         if published_at and not within_window(published_at, window):
             continue
+        points = float(points_match.group(1)) if points_match else 0.0
+        comments = float(comments_match.group(1)) if comments_match else 0.0
+        if hn_is_low_engagement(points, comments):
+            continue
         items.append(
                 RawItem(
                     source_name=source_name,
@@ -1824,8 +1866,8 @@ def parse_hn_front(
                     observed_at=now,
                 position=index,
                 metrics={
-                    "points": float(points_match.group(1)) if points_match else 0.0,
-                    "comments": float(comments_match.group(1)) if comments_match else 0.0,
+                    "points": points,
+                    "comments": comments,
                 },
             )
         )
@@ -1851,6 +1893,7 @@ def parse_hn_algolia(
                 "tags": "story",
                 "hitsPerPage": 20,
                 "numericFilters": f"created_at_i>{start_ts},created_at_i<{end_ts}",
+                "optionalWords": query,
             },
             timeout=REQUEST_TIMEOUT,
         )
@@ -1867,6 +1910,10 @@ def parse_hn_algolia(
             url = hit.get("url") or f"https://news.ycombinator.com/item?id={object_id}"
             if not is_ai_relevant(title, summary, url):
                 continue
+            points = float(hit.get("points") or 0.0)
+            comments = float(hit.get("num_comments") or 0.0)
+            if hn_is_low_engagement(points, comments):
+                continue
             seen_ids.add(object_id)
             published_at = datetime.fromtimestamp(hit.get("created_at_i", start_ts), tz=timezone.utc).astimezone(window.timezone)
             items.append(
@@ -1880,8 +1927,8 @@ def parse_hn_algolia(
                     observed_at=datetime.now(window.timezone),
                     position=len(items) + 1,
                     metrics={
-                        "points": float(hit.get("points") or 0.0),
-                        "comments": float(hit.get("num_comments") or 0.0),
+                        "points": points,
+                        "comments": comments,
                     },
                 )
             )
