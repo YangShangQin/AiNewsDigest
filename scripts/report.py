@@ -108,6 +108,20 @@ HN_QUERIES = [
     "OpenAI Anthropic Gemini DeepSeek Qwen Gemma",
     "AI coding LLM MCP",
 ]
+LINUXDO_MIN_POPULARITY_SCORE = 5.0
+ATTENTION_ONLY_COMMUNITY_SOURCES = {
+    "hacker-news-front",
+    "hn-algolia",
+    "linuxdo",
+}
+CROSS_COMMUNITY_SOURCES = {
+    "hacker-news-front",
+    "hn-algolia",
+    "daily-dev-highlights",
+    "daily-dev-arena",
+    "github-trending",
+    "linuxdo",
+}
 TRACKING_PARAMS = {"ref", "source", "spm", "fbclid", "gclid"}
 ARTICLE_SUMMARY_CACHE: dict[str, str | None] = {}
 ACTIVE_RECALL_WORKERS = DEFAULT_RECALL_WORKERS
@@ -309,6 +323,7 @@ SOURCE_RELIABILITY = {
     "aibase": 72,
     "maomu": 66,
     "github-trending": 84,
+    "linuxdo": 72,
     "collector-search-recall": 58,
 }
 
@@ -925,6 +940,51 @@ def fetch_text(
     return response.text
 
 
+def fetch_text_with_curl(url: str) -> str:
+    curl_path = shutil.which("curl")
+    if not curl_path:
+        raise RuntimeError("curl is required for this source fallback")
+    completed = subprocess.run(
+        [
+            curl_path,
+            "-sS",
+            "-f",
+            "-L",
+            "--max-time",
+            str(REQUEST_TIMEOUT),
+            "-A",
+            USER_AGENT,
+            "-H",
+            "Accept: application/json, text/javascript, */*; q=0.01",
+            "-H",
+            "Referer: https://linux.do/",
+            url,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=REQUEST_TIMEOUT + 5,
+    )
+    if completed.returncode != 0:
+        detail = clean_text(completed.stderr or completed.stdout)
+        raise RuntimeError(f"curl fallback failed for {url}: {detail}")
+    return completed.stdout
+
+
+def fetch_linuxdo_text(
+    session: requests.Session,
+    url: str,
+    fixture_dir: Path | None,
+    fixture_name: str | None = None,
+) -> str:
+    try:
+        return fetch_text(session, url, fixture_dir, fixture_name)
+    except requests.HTTPError as exc:
+        response = exc.response
+        if fixture_dir or response is None or response.status_code != 403:
+            raise
+        return fetch_text_with_curl(url)
+
+
 def get_soup(html_text: str) -> BeautifulSoup:
     return BeautifulSoup(html_text, "html.parser")
 
@@ -1161,12 +1221,25 @@ def hn_is_low_engagement(points: float, comments: float) -> bool:
     return hn_popularity_score(points, comments) < HN_MIN_POPULARITY_SCORE
 
 
+def linuxdo_popularity_score(likes: float, replies: float, views: float) -> float:
+    return likes + replies * 2.0 + views / 100.0
+
+
+def linuxdo_is_low_engagement(likes: float, replies: float, views: float) -> bool:
+    return linuxdo_popularity_score(likes, replies, views) < LINUXDO_MIN_POPULARITY_SCORE
+
+
 def site_heat(item: RawItem) -> float:
     metrics = item.metrics
     if item.source_name.startswith("hacker-news") or item.source_name == "hn-algolia":
         points = metrics.get("points", 0.0)
         comments = metrics.get("comments", 0.0)
         return min(100.0, points * 0.35 + comments * 1.2)
+    if item.source_name == "linuxdo":
+        likes = metrics.get("likes", 0.0)
+        replies = metrics.get("replies", 0.0)
+        views = metrics.get("views", 0.0)
+        return min(100.0, likes * 0.25 + replies * 1.2 + views / 400.0)
     if item.source_name == "github-trending":
         return min(100.0, metrics.get("stars_today", 0.0) / 80.0)
     if item.source_name == "daily-dev-arena":
@@ -1193,6 +1266,8 @@ def discussion_signal(items: list[RawItem]) -> float:
     for item in items:
         if item.source_name.startswith("hacker-news") or item.source_name == "hn-algolia":
             score += item.metrics.get("comments", 0.0) * 1.5
+        elif item.source_name == "linuxdo":
+            score += item.metrics.get("replies", 0.0) * 1.5 + item.metrics.get("likes", 0.0) * 0.1
         elif item.source_name == "daily-dev-arena":
             score += item.metrics.get("arena_discussion", 0.0)
         elif item.source_name == "daily-dev-highlights":
@@ -1205,19 +1280,16 @@ def discussion_signal(items: list[RawItem]) -> float:
 
 
 def cross_community_score(source_names: list[str]) -> float:
-    community_sources = {
-        "hacker-news-front",
-        "hn-algolia",
-        "daily-dev-highlights",
-        "daily-dev-arena",
-        "github-trending",
-    }
-    overlap = len([name for name in source_names if name in community_sources])
+    overlap = len([name for name in source_names if name in CROSS_COMMUNITY_SOURCES])
     return min(100.0, overlap * 32.0 + max(0, len(source_names) - overlap) * 10.0)
 
 
 def has_hacker_news_source(source_names: Iterable[str]) -> bool:
     return any(name.startswith("hacker-news") or name == "hn-algolia" for name in source_names)
+
+
+def has_attention_only_community_source(source_names: Iterable[str]) -> bool:
+    return any(name in ATTENTION_ONLY_COMMUNITY_SOURCES for name in source_names)
 
 
 def compute_event_scores(event: Event, window: ReportWindow) -> None:
@@ -1239,7 +1311,7 @@ def compute_event_scores(event: Event, window: ReportWindow) -> None:
     )
     importance = max(0.0, importance - penalty)
     attention = max(0.0, attention - penalty * 0.8)
-    if has_hacker_news_source(event.source_names):
+    if has_attention_only_community_source(event.source_names):
         total = (0.35 * attention + 0.20 * discussion) / 0.55
     else:
         total = 0.45 * importance + 0.35 * attention + 0.20 * discussion
@@ -1351,16 +1423,31 @@ def serialize_event_metrics(event: Event) -> dict[str, float]:
     metrics: dict[str, float] = {}
     hn_points: list[float] = []
     hn_comments: list[float] = []
+    linuxdo_likes: list[float] = []
+    linuxdo_replies: list[float] = []
+    linuxdo_views: list[float] = []
     for item in event.items:
         if item.source_name.startswith("hacker-news") or item.source_name == "hn-algolia":
             hn_points.append(float(item.metrics.get("points") or 0.0))
             hn_comments.append(float(item.metrics.get("comments") or 0.0))
+        if item.source_name == "linuxdo":
+            linuxdo_likes.append(float(item.metrics.get("likes") or 0.0))
+            linuxdo_replies.append(float(item.metrics.get("replies") or 0.0))
+            linuxdo_views.append(float(item.metrics.get("views") or 0.0))
     if hn_points or hn_comments:
         points = max(hn_points or [0.0])
         comments = max(hn_comments or [0.0])
         metrics["hn_points"] = round(points, 2)
         metrics["hn_comments"] = round(comments, 2)
         metrics["hn_popularity"] = round(hn_popularity_score(points, comments), 2)
+    if linuxdo_likes or linuxdo_replies or linuxdo_views:
+        likes = max(linuxdo_likes or [0.0])
+        replies = max(linuxdo_replies or [0.0])
+        views = max(linuxdo_views or [0.0])
+        metrics["linuxdo_likes"] = round(likes, 2)
+        metrics["linuxdo_replies"] = round(replies, 2)
+        metrics["linuxdo_views"] = round(views, 2)
+        metrics["linuxdo_popularity"] = round(linuxdo_popularity_score(likes, replies, views), 2)
     return metrics
 
 
@@ -1629,6 +1716,11 @@ def inspect_payload_report(payload: dict[str, Any], summary_limit: int = DEFAULT
                 metrics_label = (
                     f" | HN：{float(metrics.get('hn_points') or 0.0):.0f} points/"
                     f"{float(metrics.get('hn_comments') or 0.0):.0f} comments"
+                )
+            elif "linuxdo_likes" in metrics or "linuxdo_replies" in metrics:
+                metrics_label = (
+                    f" | Linux.do：{float(metrics.get('linuxdo_likes') or 0.0):.0f} likes/"
+                    f"{float(metrics.get('linuxdo_replies') or 0.0):.0f} replies"
                 )
             candidate_id = clean_text(str(item.get("candidate_id") or ""))
             lines.append(f"{rank}. {candidate_id} | {title} | 来源：{source_names_label} | score：{score_label}{metrics_label}")
@@ -2222,6 +2314,119 @@ def parse_github_trending(
     return items
 
 
+def parse_discourse_datetime(value: Any, tz: ZoneInfo) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return parse_iso_datetime(str(value), tz)
+    except ValueError:
+        return None
+
+
+def discourse_topic_url(base_url: str, topic: dict[str, Any]) -> str:
+    topic_id = str(topic.get("id") or "").strip()
+    slug = str(topic.get("slug") or "").strip()
+    if not topic_id:
+        return base_url
+    if slug:
+        return urljoin(base_url, f"/t/{slug}/{topic_id}")
+    return urljoin(base_url, f"/t/{topic_id}")
+
+
+def discourse_topic_summary(topic: dict[str, Any]) -> str:
+    excerpt = clean_text(str(topic.get("excerpt") or ""))
+    if not excerpt:
+        return ""
+    return clean_text(get_soup(excerpt).get_text(" ", strip=True))
+
+
+def numeric_topic_metric(topic: dict[str, Any], key: str, default: float = 0.0) -> float:
+    value = topic.get(key)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.replace(",", ""))
+        except ValueError:
+            return default
+    return default
+
+
+def parse_linuxdo_discourse(
+    session: requests.Session,
+    window: ReportWindow,
+    fixture_dir: Path | None,
+    url: str = "https://linux.do/top.json?period=daily",
+    fixture_name: str | None = "linuxdo_top.json",
+    source_name: str = "linuxdo",
+    extra_urls: Iterable[str] = (),
+    max_records: int = 40,
+) -> list[RawItem]:
+    observed = window_reference_time(window)
+    endpoints: list[tuple[str, str | None]] = [(url, fixture_name)]
+    if not fixture_dir:
+        endpoints.extend((endpoint, None) for endpoint in extra_urls)
+
+    items: list[RawItem] = []
+    seen_ids: set[str] = set()
+    for endpoint, endpoint_fixture in endpoints:
+        payload = json.loads(fetch_linuxdo_text(session, endpoint, fixture_dir, endpoint_fixture))
+        topics = payload.get("topic_list", {}).get("topics", [])
+        if not isinstance(topics, list):
+            continue
+        for topic in topics:
+            if not isinstance(topic, dict):
+                continue
+            topic_id = str(topic.get("id") or "")
+            if not topic_id or topic_id in seen_ids:
+                continue
+            title = clean_text(str(topic.get("title") or topic.get("fancy_title") or ""))
+            if not title:
+                continue
+            created_at = parse_discourse_datetime(topic.get("created_at"), window.timezone)
+            last_posted_at = parse_discourse_datetime(topic.get("last_posted_at"), window.timezone)
+            time_candidates = [dt for dt in (created_at, last_posted_at) if dt is not None]
+            if time_candidates and not any(within_window(dt, window) for dt in time_candidates):
+                continue
+            published_at = created_at if created_at and within_window(created_at, window) else last_posted_at or created_at
+            summary = discourse_topic_summary(topic)
+            topic_url = discourse_topic_url(endpoint, topic)
+            if not is_ai_relevant(title, summary, topic_url):
+                continue
+            views = numeric_topic_metric(topic, "views")
+            likes = numeric_topic_metric(topic, "like_count")
+            posts = numeric_topic_metric(topic, "posts_count")
+            replies = numeric_topic_metric(topic, "reply_count", max(0.0, posts - 1.0))
+            if linuxdo_is_low_engagement(likes, replies, views):
+                continue
+            seen_ids.add(topic_id)
+            notes = []
+            if created_at and last_posted_at and published_at == last_posted_at and created_at != last_posted_at:
+                notes.append("linuxdo_activity_time")
+            items.append(
+                    RawItem(
+                        source_name=source_name,
+                        source_type="daily",
+                        title=title,
+                        summary=summary,
+                        url=topic_url,
+                        published_at=published_at,
+                        observed_at=observed,
+                    position=len(items) + 1,
+                    metrics={
+                        "likes": likes,
+                        "replies": replies,
+                        "views": views,
+                        "posts": posts,
+                    },
+                    notes=notes,
+                )
+            )
+            if len(items) >= max_records:
+                return items
+    return items
+
+
 def parse_search_recall(
     session: requests.Session,
     window: ReportWindow,
@@ -2577,6 +2782,26 @@ def parse_github_trending_source(
     return parse_github_trending(session, window, fixture_dir, config.url, config.fixture, config.id)
 
 
+def parse_linuxdo_discourse_source(
+    config: SourceConfig,
+    session: requests.Session,
+    window: ReportWindow,
+    fixture_dir: Path | None,
+) -> list[RawItem]:
+    extra_urls = source_param_list(config, "extra_urls", [])
+    max_records = int(config.params.get("max_records") or 40)
+    return parse_linuxdo_discourse(
+        session,
+        window,
+        fixture_dir,
+        config.url,
+        config.fixture,
+        config.id,
+        extra_urls,
+        max_records,
+    )
+
+
 def parse_search_recall_source(
     config: SourceConfig,
     session: requests.Session,
@@ -2617,6 +2842,7 @@ NEWS_SOURCE_PARSERS: dict[
     "aibase": parse_aibase_source,
     "maomu": parse_maomu_source,
     "github_trending": parse_github_trending_source,
+    "discourse_topics": parse_linuxdo_discourse_source,
     "search_recall": parse_search_recall_source,
     "rss_feed": parse_rss_feed_source,
 }

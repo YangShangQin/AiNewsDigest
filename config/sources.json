@@ -45,6 +45,24 @@
       }
     },
     {
+      "id": "linuxdo",
+      "name": "Linux.do",
+      "modes": ["daily"],
+      "kind": "news",
+      "parser": "discourse_topics",
+      "url": "https://linux.do/top.json?period=daily&per_page=50",
+      "fixture": "linuxdo_top.json",
+      "enabled": true,
+      "description": "Linux.do Discourse community lists filtered to AI, coding, and LLM related topics; uses list endpoints instead of search to avoid search rate limits.",
+      "params": {
+        "extra_urls": [
+          "https://linux.do/hot.json",
+          "https://linux.do/latest.json?order=created&per_page=50"
+        ],
+        "max_records": 40
+      }
+    },
+    {
       "id": "daily-dev-highlights",
       "name": "app.daily.dev/agents",
       "modes": ["daily"],

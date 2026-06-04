@@ -8,6 +8,7 @@
 - `news.smol.ai/issues`
 - `news.ycombinator.com`
 - `Hacker News Search`（`hn.algolia.com`）
+- `Linux.do`（Discourse `top/hot/latest` 列表端点）
 - `app.daily.dev/agents`
 - `news.aibase.com/zh/news`
 - `maomu.com/news`
@@ -28,7 +29,7 @@
 - `kind` 控制普通新闻 `news` 或模型讨论度排行 `arena`。
 - `parser` 必须对应 `scripts/report.py` 中的 parser 映射。
 - `url` 和 `fixture` 分别用于线上抓取和测试 fixture。
-- `params` 用于 parser 专用配置，例如 HN 查询词、RSS 过滤条件、`search_recall` 维度查询、daily.dev Arena 浏览器兜底。
+- `params` 用于 parser 专用配置，例如 HN 查询词、RSS 过滤条件、Discourse 额外列表端点、`search_recall` 维度查询、daily.dev Arena 浏览器兜底。
 - 新来源能复用现有 parser 时，只改 `config/sources.json`；页面结构完全不同才新增 parser。
 - 多维搜索召回查询优先维护 `collector-search-recall.params.dimensions`；模板变量支持 `{month_year}`、`{month_name}`、`{year}`、`{month}`、`{date}`。
 
@@ -86,7 +87,7 @@
 
 `总分 = 0.45*重要程度 + 0.35*关注度 + 0.20*讨论度`
 
-Hacker News 来源（`hacker-news-front`、`hn-algolia`）不计入重要程度，仅按关注度和讨论度重新归一化：
+社区来源（`hacker-news-front`、`hn-algolia`、`linuxdo`）不计入重要程度，仅按关注度和讨论度重新归一化：
 
 `总分 = (0.35*关注度 + 0.20*讨论度) / 0.55`
 
@@ -105,6 +106,7 @@ Hacker News 来源（`hacker-news-front`、`hn-algolia`）不计入重要程度�
 ## 站内热度映射
 
 - Hacker News：`points`、`comments`；Hacker News front 与 Hacker News Search 均过滤 `points + 2*comments < 5` 的低互动条目，Hacker News Search 默认使用 popularity-ranked `/api/v1/search`
+- Linux.do：`like_count`、`reply_count`、`views`；使用 Discourse `top/hot/latest` 列表端点，本地按 AI 关键词过滤，避免依赖容易触发 429 的 `search.json`
 - daily.dev Highlights：高亮顺位
 - daily.dev Arena：近 7 天讨论量、`dIndex`、精选讨论互动
 - GitHub Trending：`stars today`、榜单位置

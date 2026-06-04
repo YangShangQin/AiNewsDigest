@@ -171,6 +171,19 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(session.calls[0]["params"]["optionalWords"], query)
         self.assertEqual(session.calls[0]["params"]["tags"], "story")
 
+    def test_parse_linuxdo_discourse_filters_and_scores_topics(self):
+        items = report.parse_linuxdo_discourse(FakeSession(self.fake_algolia_payload()), self.daily_window, FIXTURE_DIR)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0].title, "Claude Code MCP 工作流新增批量 review 能力")
+        self.assertEqual(items[0].url, "https://linux.do/t/claude-code-mcp-review/101")
+        self.assertEqual(items[0].metrics["likes"], 96.0)
+        self.assertEqual(items[0].metrics["replies"], 18.0)
+        self.assertEqual(items[0].metrics["views"], 2600.0)
+        self.assertIn("Claude Code", items[0].summary)
+        self.assertEqual(items[1].title, "旧帖更新：Qwen 大模型本地部署经验")
+        self.assertEqual(items[1].published_at.isoformat(), "2026-04-08T16:20:00+08:00")
+        self.assertIn("linuxdo_activity_time", items[1].notes)
+
     def test_source_config_is_external_and_described(self):
         configs = report.load_source_configs()
         self.assertFalse(any(config.id == "ai-bot" and config.enabled for config in configs))
@@ -178,6 +191,9 @@ class ReportTests(unittest.TestCase):
         hn_source = next(config for config in configs if config.id == "hn-algolia")
         self.assertEqual(hn_source.url, "https://hn.algolia.com/api/v1/search")
         self.assertEqual(len(hn_source.params["queries"]), 3)
+        linuxdo_source = next(config for config in configs if config.id == "linuxdo")
+        self.assertEqual(linuxdo_source.parser, "discourse_topics")
+        self.assertIn("https://linux.do/hot.json", linuxdo_source.params["extra_urls"])
 
     def test_collector_search_recall_source_is_configured(self):
         configs = report.load_source_configs()
@@ -492,6 +508,35 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(payload["metrics"]["hn_points"], 7.0)
         self.assertEqual(payload["metrics"]["hn_comments"], 4.0)
         self.assertEqual(payload["metrics"]["hn_popularity"], 15.0)
+
+    def test_serialize_event_candidate_includes_linuxdo_metrics(self):
+        observed = datetime(2026, 4, 9, 9, 0, tzinfo=report.ZoneInfo("Asia/Shanghai"))
+        item = report.RawItem(
+            source_name="linuxdo",
+            source_type="daily",
+            title="Qwen 大模型本地部署经验",
+            summary="社区讨论 Qwen 模型部署和推理配置。",
+            url="https://linux.do/t/qwen-local-deploy/103",
+            published_at=observed,
+            observed_at=observed,
+            position=1,
+            metrics={"likes": 12.0, "replies": 3.0, "views": 400.0},
+        )
+        event = report.Event(
+            title=item.title,
+            summary=item.summary,
+            canonical_url=item.url,
+            published_at=item.published_at,
+            observed_at=item.observed_at,
+            items=[item],
+            category="AI工具",
+            score_total=50.0,
+        )
+        payload = report.serialize_event_candidate(event, 1, compact=True)
+        self.assertEqual(payload["metrics"]["linuxdo_likes"], 12.0)
+        self.assertEqual(payload["metrics"]["linuxdo_replies"], 3.0)
+        self.assertEqual(payload["metrics"]["linuxdo_views"], 400.0)
+        self.assertEqual(payload["metrics"]["linuxdo_popularity"], 22.0)
 
     def test_compute_event_scores_uses_ten_percent_event_level_weight(self):
         observed = datetime(2026, 4, 8, 12, 0, tzinfo=report.ZoneInfo("Asia/Shanghai"))

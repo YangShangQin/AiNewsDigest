@@ -76,12 +76,12 @@ python3 -m pip install -r <SKILL_DIR>/requirements.txt
 - `name`：报告头部展示的来源名称
 - `modes`：`daily` 或 `weekly`
 - `kind`：`news` 或 `arena`
-- `parser`：解析器名称，例如 `ai_bot`、`aibase`、`rss_feed`
+- `parser`：解析器名称，例如 `ai_bot`、`aibase`、`rss_feed`、`discourse_topics`
 - `url`：抓取入口 URL
 - `fixture`：测试 fixture 文件名，可为空
 - `enabled`：是否启用
 - `description`：来源说明
-- `params`：parser 专用参数，例如 RSS 过滤条件、HN 分组查询词、`search_recall` 维度查询、daily.dev Arena 浏览器兜底开关
+- `params`：parser 专用参数，例如 RSS 过滤条件、HN 分组查询词、Discourse 额外列表端点、`search_recall` 维度查询、daily.dev Arena 浏览器兜底开关
 
 新增来源规则：
 - 如果新来源能复用现有 parser，只修改 `config/sources.json`。
@@ -113,9 +113,10 @@ python3 <SKILL_DIR>/scripts/report.py inspect --input-json /tmp/ai-daily-candida
 ```
 2. 脚本会根据模式选择来源：
 - 日报和周报来源都从 `config/sources.json` 读取。
-- 日报默认包含 `news.smol.ai`、`news.ycombinator.com`、`Hacker News Search`（`hn.algolia.com`）、`app.daily.dev/agents`、`news.aibase.com/zh/news`、`maomu.com/news`、`github.com/trending`、`collector-search-recall`。
+- 日报默认包含 `news.smol.ai`、`news.ycombinator.com`、`Hacker News Search`（`hn.algolia.com`）、`Linux.do`、`app.daily.dev/agents`、`news.aibase.com/zh/news`、`maomu.com/news`、`github.com/trending`、`collector-search-recall`。
 - 周报默认包含 `thursdai.news/feed`、`latent.space/feed`（仅保留 AINews 条目）、`collector-search-recall`、`app.daily.dev/agents/arena`。
   - `Hacker News Search` 使用 popularity-ranked `/api/v1/search`，按分组关键词召回，并过滤 `points + 2*comments < 5` 的低互动条目。
+  - `Linux.do` 使用 Discourse `top/hot/latest` 列表端点召回，按 AI 关键词本地过滤；不要依赖 `search.json`，该端点容易触发 429。
 3. 脚本对抓取结果做：
 - 统一时间解析
 - 单主类分类

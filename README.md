@@ -131,11 +131,11 @@ Each source entry contains:
 - `fixture`: optional fixture file used by tests.
 - `enabled`: set to `false` to disable a source without deleting it.
 - `description`: human-readable source notes.
-- `params`: parser-specific settings, such as RSS filters or grouped HN queries.
+- `params`: parser-specific settings, such as RSS filters, grouped HN queries, or extra Discourse list endpoints.
 
 The default daily and weekly configuration includes `collector-search-recall`, a configurable recall layer adapted from `ai-news-collector`. It expands six search dimensions: newsletters, community virality, product/model launches, funding/business, research breakthroughs, and policy/regulation. Query templates live in `config/sources.json` and support `{month_year}`, `{month_name}`, `{year}`, `{month}`, and `{date}`.
 
-Daily sources include smol.ai, Hacker News front page, Hacker News Search, daily.dev Agents, AIBase, Maomu, GitHub Trending, and collector search recall. Hacker News Search uses the popularity-ranked `/api/v1/search` endpoint with grouped queries and filters low-engagement stories where `points + 2*comments < 5`.
+Daily sources include smol.ai, Hacker News front page, Hacker News Search, Linux.do, daily.dev Agents, AIBase, Maomu, GitHub Trending, and collector search recall. Hacker News Search uses the popularity-ranked `/api/v1/search` endpoint with grouped queries and filters low-engagement stories where `points + 2*comments < 5`. Linux.do uses Discourse `top/hot/latest` list endpoints and local AI keyword filtering instead of `search.json`.
 
 Weekly sources include ThursdAI, Latent Space AINews entries, collector search recall, and daily.dev Arena model discussion rankings.
 
