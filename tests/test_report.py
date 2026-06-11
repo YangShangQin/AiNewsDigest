@@ -184,6 +184,44 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(items[1].published_at.isoformat(), "2026-04-08T16:20:00+08:00")
         self.assertIn("linuxdo_activity_time", items[1].notes)
 
+    def test_fetch_linuxdo_text_uses_browser_fallback_after_cloudflare_403(self):
+        original_fetch_text = report.fetch_text
+        original_fetch_text_with_curl = report.fetch_text_with_curl
+        original_fetch_linuxdo_text_with_browser = report.fetch_linuxdo_text_with_browser
+        browser_calls = []
+
+        class ChallengeResponse:
+            status_code = 403
+            headers = {"cf-mitigated": "challenge"}
+
+        def raise_challenge(*args, **kwargs):
+            raise report.requests.HTTPError(response=ChallengeResponse())
+
+        def fail_curl(url):
+            raise RuntimeError(f"curl fallback failed for {url}: 403")
+
+        def browser_fallback(url):
+            browser_calls.append(url)
+            return '{"topic_list":{"topics":[]}}'
+
+        try:
+            report.fetch_text = raise_challenge
+            report.fetch_text_with_curl = fail_curl
+            report.fetch_linuxdo_text_with_browser = browser_fallback
+            text = report.fetch_linuxdo_text(
+                FakeSession(self.fake_algolia_payload()),
+                "https://linux.do/top.json?period=daily&per_page=50",
+                None,
+                None,
+            )
+        finally:
+            report.fetch_text = original_fetch_text
+            report.fetch_text_with_curl = original_fetch_text_with_curl
+            report.fetch_linuxdo_text_with_browser = original_fetch_linuxdo_text_with_browser
+
+        self.assertEqual(text, '{"topic_list":{"topics":[]}}')
+        self.assertEqual(browser_calls, ["https://linux.do/top.json?period=daily&per_page=50"])
+
     def test_source_config_is_external_and_described(self):
         configs = report.load_source_configs()
         self.assertFalse(any(config.id == "ai-bot" and config.enabled for config in configs))

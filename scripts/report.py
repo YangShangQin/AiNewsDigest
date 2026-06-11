@@ -970,6 +970,98 @@ def fetch_text_with_curl(url: str) -> str:
     return completed.stdout
 
 
+def is_cloudflare_challenge_text(text: str) -> bool:
+    marker_text = text[:8000].lower()
+    return any(
+        marker in marker_text
+        for marker in (
+            "cf-mitigated",
+            "just a moment",
+            "challenge-platform",
+            "enable javascript and cookies to continue",
+            "cf-turnstile-response",
+        )
+    )
+
+
+def linuxdo_browser_fallback_enabled() -> bool:
+    value = os.environ.get("AI_NEWS_LINUXDO_BROWSER_FALLBACK", "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def fetch_linuxdo_text_with_browser(url: str) -> str | None:
+    if sys.platform != "darwin" or not linuxdo_browser_fallback_enabled():
+        return None
+    osascript_path = shutil.which("osascript")
+    if not osascript_path:
+        return None
+
+    script = r'''
+on run argv
+    set targetUrl to item 1 of argv
+    set createdWindow to false
+    set lastPageText to ""
+    tell application "Google Chrome"
+        if (count of windows) = 0 then
+            make new window
+            set createdWindow to true
+        end if
+        set windowCount to count of windows
+        repeat with windowIndex from 1 to windowCount
+            set targetWindow to window windowIndex
+            set originalIndex to active tab index of targetWindow
+            set newTab to make new tab at end of tabs of targetWindow with properties {URL:targetUrl}
+            set active tab index of targetWindow to (count tabs of targetWindow)
+            try
+                repeat with i from 1 to 120
+                    delay 0.1
+                    if loading of newTab is false then exit repeat
+                end repeat
+                delay 0.2
+                set jsCode to "(() => { const pre = document.querySelector('pre'); return pre ? pre.innerText : (document.body ? document.body.innerText : document.documentElement.innerText); })();"
+                set pageText to execute newTab javascript jsCode
+                set lastPageText to pageText
+                close newTab
+                if (count tabs of targetWindow) >= originalIndex then
+                    set active tab index of targetWindow to originalIndex
+                end if
+                if pageText starts with "{" or pageText starts with "[" then
+                    if createdWindow then close targetWindow
+                    return pageText
+                end if
+            on error errMsg number errNum
+                try
+                    close newTab
+                    if (count tabs of targetWindow) >= originalIndex then
+                        set active tab index of targetWindow to originalIndex
+                    end if
+                end try
+                if createdWindow then close targetWindow
+                error errMsg number errNum
+            end try
+        end repeat
+        if createdWindow then close window 1
+    end tell
+    return lastPageText
+end run
+'''
+    try:
+        completed = subprocess.run(
+            [osascript_path, "-e", script, url],
+            capture_output=True,
+            text=True,
+            timeout=REQUEST_TIMEOUT + 10,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if completed.returncode != 0:
+        return None
+    text = completed.stdout.strip()
+    if not text or is_cloudflare_challenge_text(text):
+        return None
+    return text
+
+
 def fetch_linuxdo_text(
     session: requests.Session,
     url: str,
@@ -982,7 +1074,21 @@ def fetch_linuxdo_text(
         response = exc.response
         if fixture_dir or response is None or response.status_code != 403:
             raise
-        return fetch_text_with_curl(url)
+        curl_error: RuntimeError | None = None
+        try:
+            curl_text = fetch_text_with_curl(url)
+            if not is_cloudflare_challenge_text(curl_text):
+                return curl_text
+            curl_error = RuntimeError(f"curl fallback returned Cloudflare challenge for {url}")
+        except RuntimeError as curl_exc:
+            curl_error = curl_exc
+
+        browser_text = fetch_linuxdo_text_with_browser(url)
+        if browser_text:
+            return browser_text
+        raise RuntimeError(
+            f"{curl_error}; Chrome browser fallback unavailable or returned Cloudflare challenge"
+        ) from curl_error
 
 
 def get_soup(html_text: str) -> BeautifulSoup:
