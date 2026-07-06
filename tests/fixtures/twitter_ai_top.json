@@ -1,0 +1,64 @@
+{
+  "ok": true,
+  "schema_version": "1",
+  "data": [
+    {
+      "id": "2072017450611142835",
+      "text": "Introducing Claude Sonnet 5, our most agentic Sonnet yet.\n\nIt makes plans, uses tools like browsers and terminals, and runs autonomously at a level that just a few months ago required larger and more expensive models.",
+      "author": {
+        "name": "Claude",
+        "screenName": "claudeai",
+        "verified": true
+      },
+      "metrics": {
+        "likes": 41793,
+        "retweets": 4421,
+        "replies": 2004,
+        "quotes": 2384,
+        "views": 9296264,
+        "bookmarks": 5316
+      },
+      "createdAtISO": "2026-04-08T04:00:00+00:00",
+      "lang": "en",
+      "isRetweet": false
+    },
+    {
+      "id": "2073047871738487169",
+      "text": "AI SIDE HUSTLE. Comment Hustle and I will DM my guide for FREE. Must follow me to get guide in DM.",
+      "author": {
+        "name": "Promo Account",
+        "screenName": "promoai"
+      },
+      "metrics": {
+        "likes": 1487,
+        "retweets": 196,
+        "replies": 4793,
+        "quotes": 13,
+        "views": 372019
+      },
+      "createdAtISO": "2026-04-08T05:00:00+00:00",
+      "lang": "en",
+      "isRetweet": false
+    },
+    {
+      "id": "2072394812301480067",
+      "text": "We took a 30B model and split it in two to write tokens in parallel instead of one at a time. Introducing Nemotron-Labs-TwoTower from NVIDIA Research.",
+      "author": {
+        "name": "NVIDIA AI",
+        "screenName": "NVIDIAAI",
+        "verified": true
+      },
+      "metrics": {
+        "likes": 4789,
+        "retweets": 600,
+        "replies": 129,
+        "quotes": 145,
+        "views": 736976,
+        "bookmarks": 2591
+      },
+      "createdAtISO": "2026-04-08T06:00:00+00:00",
+      "lang": "en",
+      "isRetweet": false
+    }
+  ]
+}

@@ -118,6 +118,48 @@
       "description": "GitHub Trending repositories filtered to AI coding or AI tools."
     },
     {
+      "id": "agent-reach-twitter",
+      "name": "X/Twitter via agent-reach",
+      "modes": ["daily"],
+      "kind": "news",
+      "parser": "agent_reach_twitter",
+      "url": "agent-reach://twitter/search",
+      "fixture": "twitter_ai_top.json",
+      "enabled": true,
+      "description": "X/Twitter Top search for AI discussions. Fetching must go through agent-reach doctor and the active Twitter backend, normally twitter-cli.",
+      "params": {
+        "queries": [
+          "Claude",
+          "OpenAI",
+          "Anthropic",
+          "Gemini",
+          "xAI",
+          "\"AI agent\"",
+          "\"AI coding\"",
+          "LLM"
+        ],
+        "search_type": "top",
+        "lang": "en",
+        "min_likes": 1000,
+        "min_text_length": 40,
+        "max_records": 20,
+        "max_fetch": 60,
+        "exclude_phrases": [
+          "ai generated",
+          "comment",
+          "dm",
+          "follow me",
+          "free for",
+          "give this",
+          "giveaway",
+          "like + repost",
+          "name this",
+          "reply",
+          "side hustle"
+        ]
+      }
+    },
+    {
       "id": "collector-search-recall",
       "name": "collector multi-dimensional search",
       "modes": ["daily", "weekly"],

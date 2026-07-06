@@ -153,8 +153,8 @@ class ReportTests(unittest.TestCase):
                         "title": "Claude Code adds terminal workflow features",
                         "url": "https://example.com/claude-code",
                         "created_at_i": int(datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc).timestamp()),
-                        "points": 3,
-                        "num_comments": 1,
+                        "points": 30,
+                        "num_comments": 12,
                         "story_text": "Claude Code improves AI coding workflows.",
                     },
                 ]
@@ -164,8 +164,8 @@ class ReportTests(unittest.TestCase):
         items = report.parse_hn_algolia(session, self.daily_window, queries=[query])
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].title, "Claude Code adds terminal workflow features")
-        self.assertEqual(items[0].metrics["points"], 3)
-        self.assertEqual(items[0].metrics["comments"], 1)
+        self.assertEqual(items[0].metrics["points"], 30)
+        self.assertEqual(items[0].metrics["comments"], 12)
         self.assertEqual(session.calls[0]["url"], "https://hn.algolia.com/api/v1/search")
         self.assertEqual(session.calls[0]["params"]["query"], query)
         self.assertEqual(session.calls[0]["params"]["optionalWords"], query)
@@ -232,6 +232,11 @@ class ReportTests(unittest.TestCase):
         linuxdo_source = next(config for config in configs if config.id == "linuxdo")
         self.assertEqual(linuxdo_source.parser, "discourse_topics")
         self.assertIn("https://linux.do/hot.json", linuxdo_source.params["extra_urls"])
+        twitter_source = next(config for config in configs if config.id == "agent-reach-twitter")
+        self.assertEqual(twitter_source.parser, "agent_reach_twitter")
+        self.assertEqual(twitter_source.url, "agent-reach://twitter/search")
+        self.assertIn("Claude", twitter_source.params["queries"])
+        self.assertIn('"AI agent"', twitter_source.params["queries"])
 
     def test_collector_search_recall_source_is_configured(self):
         configs = report.load_source_configs()
@@ -388,6 +393,30 @@ class ReportTests(unittest.TestCase):
         items = report.parse_github_trending(FakeSession(self.fake_algolia_payload()), self.daily_window, FIXTURE_DIR)
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].title, "openai / codex-agent")
+
+    def test_parse_agent_reach_twitter_filters_promotional_posts(self):
+        config = report.SourceConfig(
+            id="agent-reach-twitter",
+            name="X/Twitter via agent-reach",
+            modes=("daily",),
+            kind="news",
+            parser="agent_reach_twitter",
+            url="agent-reach://twitter/search",
+            fixture="twitter_ai_top.json",
+            params={
+                "queries": ["AI"],
+                "min_likes": 1000,
+                "max_records": 10,
+                "exclude_phrases": ["comment", "dm", "follow me", "free"],
+            },
+        )
+        items = report.parse_agent_reach_twitter_source(config, FakeSession(self.fake_algolia_payload()), self.daily_window, FIXTURE_DIR)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0].source_name, "agent-reach-twitter")
+        self.assertEqual(items[0].url, "https://x.com/claudeai/status/2072017450611142835")
+        self.assertIn("agent-reach:twitter-cli", items[0].notes)
+        self.assertEqual(items[0].metrics["likes"], 41793.0)
+        self.assertNotIn("SIDE HUSTLE", " ".join(item.summary for item in items))
 
     def test_parse_search_recall_expands_dimensions_and_dedupes(self):
         config = report.SourceConfig(
@@ -575,6 +604,35 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(payload["metrics"]["linuxdo_replies"], 3.0)
         self.assertEqual(payload["metrics"]["linuxdo_views"], 400.0)
         self.assertEqual(payload["metrics"]["linuxdo_popularity"], 22.0)
+
+    def test_serialize_event_candidate_includes_twitter_metrics(self):
+        observed = datetime(2026, 4, 9, 9, 0, tzinfo=report.ZoneInfo("Asia/Shanghai"))
+        item = report.RawItem(
+            source_name="agent-reach-twitter",
+            source_type="daily",
+            title="Claude launches AI agent model",
+            summary="Claude launches an AI agent model for coding and tool use.",
+            url="https://x.com/claudeai/status/2072017450611142835",
+            published_at=observed,
+            observed_at=observed,
+            position=1,
+            metrics={"likes": 41793.0, "retweets": 4421.0, "replies": 2004.0, "quotes": 2384.0, "views": 9296264.0},
+        )
+        event = report.Event(
+            title=item.title,
+            summary=item.summary,
+            canonical_url=item.url,
+            published_at=item.published_at,
+            observed_at=item.observed_at,
+            items=[item],
+            category="AICoding",
+            score_total=50.0,
+        )
+        payload = report.serialize_event_candidate(event, 1, compact=True)
+        self.assertEqual(payload["metrics"]["twitter_likes"], 41793.0)
+        self.assertEqual(payload["metrics"]["twitter_retweets"], 4421.0)
+        self.assertEqual(payload["metrics"]["twitter_replies"], 2004.0)
+        self.assertEqual(payload["metrics"]["twitter_views"], 9296264.0)
 
     def test_compute_event_scores_uses_ten_percent_event_level_weight(self):
         observed = datetime(2026, 4, 8, 12, 0, tzinfo=report.ZoneInfo("Asia/Shanghai"))

@@ -102,7 +102,8 @@ USER_AGENT = (
     "Chrome/135.0.0.0 Safari/537.36"
 )
 ALGOLIA_API = "https://hn.algolia.com/api/v1/search"
-HN_MIN_POPULARITY_SCORE = 5.0
+HN_MIN_POINTS = 10.0
+HN_MIN_COMMENTS = 10.0
 HN_QUERIES = [
     "Claude Code Codex Cursor",
     "OpenAI Anthropic Gemini DeepSeek Qwen Gemma",
@@ -113,6 +114,7 @@ ATTENTION_ONLY_COMMUNITY_SOURCES = {
     "hacker-news-front",
     "hn-algolia",
     "linuxdo",
+    "agent-reach-twitter",
 }
 CROSS_COMMUNITY_SOURCES = {
     "hacker-news-front",
@@ -121,6 +123,7 @@ CROSS_COMMUNITY_SOURCES = {
     "daily-dev-arena",
     "github-trending",
     "linuxdo",
+    "agent-reach-twitter",
 }
 TRACKING_PARAMS = {"ref", "source", "spm", "fbclid", "gclid"}
 ARTICLE_SUMMARY_CACHE: dict[str, str | None] = {}
@@ -324,6 +327,7 @@ SOURCE_RELIABILITY = {
     "maomu": 66,
     "github-trending": 84,
     "linuxdo": 72,
+    "agent-reach-twitter": 70,
     "collector-search-recall": 58,
 }
 
@@ -1324,7 +1328,7 @@ def hn_popularity_score(points: float, comments: float) -> float:
 
 
 def hn_is_low_engagement(points: float, comments: float) -> bool:
-    return hn_popularity_score(points, comments) < HN_MIN_POPULARITY_SCORE
+    return points < HN_MIN_POINTS or comments < HN_MIN_COMMENTS
 
 
 def linuxdo_popularity_score(likes: float, replies: float, views: float) -> float:
@@ -1346,6 +1350,13 @@ def site_heat(item: RawItem) -> float:
         replies = metrics.get("replies", 0.0)
         views = metrics.get("views", 0.0)
         return min(100.0, likes * 0.25 + replies * 1.2 + views / 400.0)
+    if item.source_name == "agent-reach-twitter":
+        likes = metrics.get("likes", 0.0)
+        retweets = metrics.get("retweets", 0.0)
+        replies = metrics.get("replies", 0.0)
+        quotes = metrics.get("quotes", 0.0)
+        views = metrics.get("views", 0.0)
+        return min(100.0, likes / 600.0 + retweets / 90.0 + replies / 80.0 + quotes / 80.0 + views / 250000.0)
     if item.source_name == "github-trending":
         return min(100.0, metrics.get("stars_today", 0.0) / 80.0)
     if item.source_name == "daily-dev-arena":
@@ -1374,6 +1385,12 @@ def discussion_signal(items: list[RawItem]) -> float:
             score += item.metrics.get("comments", 0.0) * 1.5
         elif item.source_name == "linuxdo":
             score += item.metrics.get("replies", 0.0) * 1.5 + item.metrics.get("likes", 0.0) * 0.1
+        elif item.source_name == "agent-reach-twitter":
+            score += (
+                item.metrics.get("replies", 0.0) * 0.45
+                + item.metrics.get("retweets", 0.0) * 0.25
+                + item.metrics.get("quotes", 0.0) * 0.5
+            )
         elif item.source_name == "daily-dev-arena":
             score += item.metrics.get("arena_discussion", 0.0)
         elif item.source_name == "daily-dev-highlights":
@@ -1532,6 +1549,11 @@ def serialize_event_metrics(event: Event) -> dict[str, float]:
     linuxdo_likes: list[float] = []
     linuxdo_replies: list[float] = []
     linuxdo_views: list[float] = []
+    twitter_likes: list[float] = []
+    twitter_retweets: list[float] = []
+    twitter_replies: list[float] = []
+    twitter_quotes: list[float] = []
+    twitter_views: list[float] = []
     for item in event.items:
         if item.source_name.startswith("hacker-news") or item.source_name == "hn-algolia":
             hn_points.append(float(item.metrics.get("points") or 0.0))
@@ -1540,6 +1562,12 @@ def serialize_event_metrics(event: Event) -> dict[str, float]:
             linuxdo_likes.append(float(item.metrics.get("likes") or 0.0))
             linuxdo_replies.append(float(item.metrics.get("replies") or 0.0))
             linuxdo_views.append(float(item.metrics.get("views") or 0.0))
+        if item.source_name == "agent-reach-twitter":
+            twitter_likes.append(float(item.metrics.get("likes") or 0.0))
+            twitter_retweets.append(float(item.metrics.get("retweets") or 0.0))
+            twitter_replies.append(float(item.metrics.get("replies") or 0.0))
+            twitter_quotes.append(float(item.metrics.get("quotes") or 0.0))
+            twitter_views.append(float(item.metrics.get("views") or 0.0))
     if hn_points or hn_comments:
         points = max(hn_points or [0.0])
         comments = max(hn_comments or [0.0])
@@ -1554,6 +1582,12 @@ def serialize_event_metrics(event: Event) -> dict[str, float]:
         metrics["linuxdo_replies"] = round(replies, 2)
         metrics["linuxdo_views"] = round(views, 2)
         metrics["linuxdo_popularity"] = round(linuxdo_popularity_score(likes, replies, views), 2)
+    if twitter_likes or twitter_retweets or twitter_replies or twitter_views:
+        metrics["twitter_likes"] = round(max(twitter_likes or [0.0]), 2)
+        metrics["twitter_retweets"] = round(max(twitter_retweets or [0.0]), 2)
+        metrics["twitter_replies"] = round(max(twitter_replies or [0.0]), 2)
+        metrics["twitter_quotes"] = round(max(twitter_quotes or [0.0]), 2)
+        metrics["twitter_views"] = round(max(twitter_views or [0.0]), 2)
     return metrics
 
 
@@ -2040,6 +2074,8 @@ def parse_hn_front(
         title = clean_text(title_anchor.get_text(" ", strip=True))
         link = title_anchor.get("href") or ""
         full_link = urljoin(url, link)
+        object_id = row.get("id") or ""
+        item_url = f"https://news.ycombinator.com/item?id={object_id}" if object_id else full_link
         sub = row.find_next_sibling("tr")
         subtext = clean_text(sub.get_text(" ", strip=True) if sub else "")
         if not is_ai_relevant(title, subtext, full_link):
@@ -2059,7 +2095,7 @@ def parse_hn_front(
                     source_type="daily",
                     title=title,
                     summary="",
-                    url=full_link,
+                    url=item_url,
                     published_at=published_at,
                     observed_at=now,
                 position=index,
@@ -2105,8 +2141,9 @@ def parse_hn_algolia(
             if not title:
                 continue
             summary = clean_text(hit.get("story_text") or hit.get("comment_text") or "")
-            url = hit.get("url") or f"https://news.ycombinator.com/item?id={object_id}"
-            if not is_ai_relevant(title, summary, url):
+            story_url = hit.get("url") or ""
+            item_url = f"https://news.ycombinator.com/item?id={object_id}"
+            if not is_ai_relevant(title, summary, story_url or item_url):
                 continue
             points = float(hit.get("points") or 0.0)
             comments = float(hit.get("num_comments") or 0.0)
@@ -2120,7 +2157,7 @@ def parse_hn_algolia(
                     source_type="daily",
                     title=title,
                     summary=summary,
-                    url=url,
+                    url=item_url,
                     published_at=published_at,
                     observed_at=datetime.now(window.timezone),
                     position=len(items) + 1,
@@ -2533,6 +2570,293 @@ def parse_linuxdo_discourse(
     return items
 
 
+def extract_json_object(text: str) -> dict[str, Any]:
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError("empty JSON output")
+    start = stripped.find("{")
+    if start < 0:
+        raise ValueError("JSON object not found in command output")
+    return json.loads(stripped[start:])
+
+
+def run_agent_reach_json(command: list[str], timeout: int = 60) -> dict[str, Any]:
+    completed = subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout)
+    return extract_json_object(completed.stdout)
+
+
+def agent_reach_twitter_backend(agent_reach_command: str) -> str:
+    executable = shutil.which(agent_reach_command)
+    if not executable:
+        raise RuntimeError(f"agent-reach command not found: {agent_reach_command}")
+    payload = run_agent_reach_json([executable, "doctor", "--json"], timeout=60)
+    twitter_status = payload.get("twitter")
+    if not isinstance(twitter_status, dict):
+        raise RuntimeError("agent-reach doctor did not return twitter status")
+    active_backend = str(twitter_status.get("active_backend") or "")
+    status = str(twitter_status.get("status") or "")
+    if status != "ok":
+        message = str(twitter_status.get("message") or "twitter backend unavailable")
+        raise RuntimeError(f"agent-reach twitter backend unavailable: {message}")
+    if active_backend != "twitter-cli":
+        raise RuntimeError(f"unsupported agent-reach twitter backend: {active_backend}")
+    return active_backend
+
+
+def twitter_status_url(tweet: dict[str, Any]) -> str:
+    tweet_id = clean_text(str(tweet.get("id") or ""))
+    author = tweet.get("author")
+    screen_name = ""
+    if isinstance(author, dict):
+        screen_name = clean_text(str(author.get("screenName") or ""))
+    if screen_name and tweet_id:
+        return f"https://x.com/{screen_name}/status/{tweet_id}"
+    if tweet_id:
+        return f"https://x.com/i/web/status/{tweet_id}"
+    return "https://x.com/"
+
+
+def twitter_metric(tweet: dict[str, Any], key: str) -> float:
+    metrics = tweet.get("metrics")
+    if not isinstance(metrics, dict):
+        return 0.0
+    value = metrics.get(key)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.replace(",", ""))
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def twitter_tweet_time(tweet: dict[str, Any], tz: ZoneInfo) -> datetime | None:
+    value = clean_text(str(tweet.get("createdAtISO") or ""))
+    if value:
+        try:
+            return parse_iso_datetime(value, tz)
+        except ValueError:
+            pass
+    value = clean_text(str(tweet.get("createdAtLocal") or ""))
+    if value:
+        try:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+        except ValueError:
+            pass
+    return None
+
+
+def twitter_title(text: str) -> str:
+    cleaned = clean_text(text)
+    if not cleaned:
+        return ""
+    first_sentence = re.split(r"(?<=[.!?。！？])\s+", cleaned, maxsplit=1)[0]
+    if len(first_sentence) >= 24:
+        return collapse_summary(first_sentence, 120)
+    first_line = cleaned.split("\n", 1)[0]
+    return collapse_summary(first_line or cleaned, 120)
+
+
+def is_low_quality_twitter_post(text: str, exclude_phrases: Iterable[str]) -> bool:
+    lowered = text.lower()
+    return any(phrase.lower() in lowered for phrase in exclude_phrases)
+
+
+def is_agent_reach_twitter_relevant(text: str, url: str) -> bool:
+    lowered = text.lower()
+    if not is_ai_relevant(text, "", url):
+        return False
+    if "ai generated" in lowered and keyword_hits(lowered, AI_CORE_KEYWORDS - {"ai"}) == 0:
+        return False
+    return True
+
+
+def parse_agent_reach_twitter_payload(
+    payload: dict[str, Any],
+    window: ReportWindow,
+    source_name: str,
+    max_records: int,
+    min_likes: float,
+    min_text_length: int,
+    exclude_phrases: Iterable[str],
+) -> list[RawItem]:
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return []
+    observed = window_reference_time(window)
+    items: list[RawItem] = []
+    seen_urls: set[str] = set()
+    for tweet in data:
+        if not isinstance(tweet, dict):
+            continue
+        text = clean_text(str(tweet.get("text") or ""))
+        if len(text) < min_text_length or is_low_quality_twitter_post(text, exclude_phrases):
+            continue
+        url = twitter_status_url(tweet)
+        normalized = normalize_url(url)
+        if normalized in seen_urls:
+            continue
+        published_at = twitter_tweet_time(tweet, window.timezone)
+        if published_at and not within_window(published_at, window):
+            continue
+        likes = twitter_metric(tweet, "likes")
+        if likes < min_likes:
+            continue
+        if not is_agent_reach_twitter_relevant(text, url):
+            continue
+        title = twitter_title(text)
+        if not title:
+            continue
+        seen_urls.add(normalized)
+        items.append(
+            RawItem(
+                source_name=source_name,
+                source_type=window.mode,
+                title=title,
+                summary=collapse_summary(text, DEFAULT_SUMMARY_LIMIT),
+                url=url,
+                published_at=published_at,
+                observed_at=observed,
+                position=len(items) + 1,
+                metrics={
+                    "likes": likes,
+                    "retweets": twitter_metric(tweet, "retweets"),
+                    "replies": twitter_metric(tweet, "replies"),
+                    "quotes": twitter_metric(tweet, "quotes"),
+                    "views": twitter_metric(tweet, "views"),
+                    "bookmarks": twitter_metric(tweet, "bookmarks"),
+                },
+                notes=["agent-reach:twitter-cli", "twitter_search_type:top"],
+            )
+        )
+        if len(items) >= max_records:
+            break
+    return items
+
+
+def fetch_agent_reach_twitter_query(
+    twitter_command: str,
+    query: str,
+    window: ReportWindow,
+    max_fetch: int,
+    min_likes: float,
+    search_type: str,
+    lang: str,
+) -> dict[str, Any]:
+    executable = shutil.which(twitter_command)
+    if not executable:
+        raise RuntimeError(f"twitter command not found: {twitter_command}")
+    command = [
+        executable,
+        "search",
+        query,
+        "--type",
+        search_type,
+        "--since",
+        window.start.date().isoformat(),
+        "--until",
+        window.end.date().isoformat(),
+        "--min-likes",
+        str(int(min_likes)),
+        "-n",
+        str(max_fetch),
+        "--json",
+        "--full-text",
+    ]
+    if lang:
+        command.extend(["--lang", lang])
+    last_error: Exception | None = None
+    for _ in range(2):
+        try:
+            return run_agent_reach_json(command, timeout=90)
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"twitter search failed for query {query!r}: {last_error}") from last_error
+
+
+def parse_agent_reach_twitter(
+    window: ReportWindow,
+    fixture_dir: Path | None,
+    fixture_name: str | None,
+    source_name: str,
+    params: dict[str, Any],
+) -> list[RawItem]:
+    max_records = max(1, int(params.get("max_records") or 20))
+    max_fetch = max(max_records, int(params.get("max_fetch") or max_records * 3))
+    min_likes = float(params.get("min_likes") or 1000)
+    min_text_length = int(params.get("min_text_length") or 40)
+    search_type = str(params.get("search_type") or "top")
+    lang = str(params.get("lang") or "")
+    queries_value = params.get("queries")
+    queries = [str(item) for item in queries_value] if isinstance(queries_value, list) else ["AI"]
+    exclude_value = params.get("exclude_phrases")
+    exclude_phrases = (
+        [str(item) for item in exclude_value]
+        if isinstance(exclude_value, list)
+        else [
+            "ai generated",
+            "comment",
+            "dm",
+            "follow me",
+            "free for",
+            "give this",
+            "giveaway",
+            "like + repost",
+            "name this",
+            "reply",
+            "side hustle",
+        ]
+    )
+
+    if fixture_dir and fixture_name:
+        payload = json.loads((fixture_dir / fixture_name).read_text(encoding="utf-8"))
+        return parse_agent_reach_twitter_payload(
+            payload,
+            window,
+            source_name,
+            max_records,
+            min_likes,
+            min_text_length,
+            exclude_phrases,
+        )
+
+    agent_reach_command = str(params.get("agent_reach_command") or "agent-reach")
+    twitter_command = str(params.get("twitter_command") or "twitter")
+    agent_reach_twitter_backend(agent_reach_command)
+
+    items: list[RawItem] = []
+    seen_urls: set[str] = set()
+    for query in queries:
+        payload = fetch_agent_reach_twitter_query(
+            twitter_command,
+            query,
+            window,
+            max_fetch,
+            min_likes,
+            search_type,
+            lang,
+        )
+        for item in parse_agent_reach_twitter_payload(
+            payload,
+            window,
+            source_name,
+            max_records,
+            min_likes,
+            min_text_length,
+            exclude_phrases,
+        ):
+            normalized = normalize_url(item.url)
+            if normalized in seen_urls:
+                continue
+            seen_urls.add(normalized)
+            item.position = len(items) + 1
+            items.append(item)
+            if len(items) >= max_records:
+                return items
+    return items
+
+
 def parse_search_recall(
     session: requests.Session,
     window: ReportWindow,
@@ -2908,6 +3232,15 @@ def parse_linuxdo_discourse_source(
     )
 
 
+def parse_agent_reach_twitter_source(
+    config: SourceConfig,
+    session: requests.Session,
+    window: ReportWindow,
+    fixture_dir: Path | None,
+) -> list[RawItem]:
+    return parse_agent_reach_twitter(window, fixture_dir, config.fixture, config.id, config.params)
+
+
 def parse_search_recall_source(
     config: SourceConfig,
     session: requests.Session,
@@ -2949,6 +3282,7 @@ NEWS_SOURCE_PARSERS: dict[
     "maomu": parse_maomu_source,
     "github_trending": parse_github_trending_source,
     "discourse_topics": parse_linuxdo_discourse_source,
+    "agent_reach_twitter": parse_agent_reach_twitter_source,
     "search_recall": parse_search_recall_source,
     "rss_feed": parse_rss_feed_source,
 }

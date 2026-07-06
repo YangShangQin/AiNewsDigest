@@ -113,10 +113,11 @@ python3 <SKILL_DIR>/scripts/report.py inspect --input-json /tmp/ai-daily-candida
 ```
 2. 脚本会根据模式选择来源：
 - 日报和周报来源都从 `config/sources.json` 读取。
-- 日报默认包含 `news.smol.ai`、`news.ycombinator.com`、`Hacker News Search`（`hn.algolia.com`）、`Linux.do`、`app.daily.dev/agents`、`news.aibase.com/zh/news`、`maomu.com/news`、`github.com/trending`、`collector-search-recall`。
+- 日报默认包含 `news.smol.ai`、`news.ycombinator.com`、`Hacker News Search`（`hn.algolia.com`）、`Linux.do`、`app.daily.dev/agents`、`news.aibase.com/zh/news`、`maomu.com/news`、`github.com/trending`、`X/Twitter via agent-reach`、`collector-search-recall`。
 - 周报默认包含 `thursdai.news/feed`、`latent.space/feed`（仅保留 AINews 条目）、`collector-search-recall`、`app.daily.dev/agents/arena`。
-  - `Hacker News Search` 使用 popularity-ranked `/api/v1/search`，按分组关键词召回，并过滤 `points + 2*comments < 5` 的低互动条目。
+  - `Hacker News Search` 使用 popularity-ranked `/api/v1/search`，按分组关键词召回；Hacker News front 与 Hacker News Search 都只保留 `points >= 10` 且 `comments >= 10` 的条目，并统一使用 Hacker News 站内帖子链接作为报告链接。
   - `Linux.do` 使用 Discourse `top/hot/latest` 列表端点召回，按 AI 关键词本地过滤；不要依赖 `search.json`，该端点容易触发 429。
+  - `X/Twitter via agent-reach` 必须先执行 `agent-reach doctor --json` 确认 Twitter active backend；当前实现只支持通过 agent-reach 选出的 `twitter-cli` 后端执行 `twitter search ... --type top --json`，不得改成直接网页抓取。
 3. 脚本对抓取结果做：
 - 统一时间解析
 - 单主类分类

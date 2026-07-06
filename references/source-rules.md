@@ -13,6 +13,7 @@
 - `news.aibase.com/zh/news`
 - `maomu.com/news`
 - `github.com/trending`
+- `X/Twitter via agent-reach`（先 `agent-reach doctor --json`，再通过 active Twitter 后端 `twitter-cli` 执行 Top 搜索）
 - `news.google.com/rss/search`（`collector-search-recall`：按 Newsletter、社区热度、产品发布、融资、研究、监管 6 个维度做搜索召回）
 
 ### 周报
@@ -105,8 +106,9 @@
 
 ## 站内热度映射
 
-- Hacker News：`points`、`comments`；Hacker News front 与 Hacker News Search 均过滤 `points + 2*comments < 5` 的低互动条目，Hacker News Search 默认使用 popularity-ranked `/api/v1/search`
+- Hacker News：`points`、`comments`；Hacker News front 与 Hacker News Search 均只保留 `points >= 10` 且 `comments >= 10` 的条目，报告链接统一使用 Hacker News 站内帖子链接；Hacker News Search 默认使用 popularity-ranked `/api/v1/search`
 - Linux.do：`like_count`、`reply_count`、`views`；使用 Discourse `top/hot/latest` 列表端点，本地按 AI 关键词过滤，避免依赖容易触发 429 的 `search.json`
+- X/Twitter：通过 agent-reach 选择 Twitter 后端，默认使用 `twitter-cli` Top 搜索；按 `likes`、`retweets`、`replies`、`quotes`、`views` 映射热度，并作为社区注意力来源处理
 - daily.dev Highlights：高亮顺位
 - daily.dev Arena：近 7 天讨论量、`dIndex`、精选讨论互动
 - GitHub Trending：`stars today`、榜单位置
